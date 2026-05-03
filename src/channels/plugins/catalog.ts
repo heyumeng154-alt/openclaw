@@ -113,7 +113,7 @@ function resolveDefaultCatalogPaths(env: NodeJS.ProcessEnv): string[] {
 
 function resolveExternalCatalogPaths(options: CatalogOptions): string[] {
   if (options.catalogPaths && options.catalogPaths.length > 0) {
-    return options.catalogPaths.map((entry) => entry.trim()).filter(Boolean);
+    return normalizeCatalogPathEntries(options.catalogPaths);
   }
   const env = options.env ?? process.env;
   for (const key of ENV_CATALOG_PATHS) {
@@ -168,7 +168,7 @@ function loadOfficialCatalogEntriesFromPaths(paths: Iterable<string>): ExternalC
 
 function resolveOfficialCatalogPaths(options: CatalogOptions): string[] {
   if (options.officialCatalogPaths && options.officialCatalogPaths.length > 0) {
-    return options.officialCatalogPaths.map((entry) => entry.trim()).filter(Boolean);
+    return normalizeCatalogPathEntries(options.officialCatalogPaths);
   }
 
   const packageRoots = [
@@ -187,6 +187,17 @@ function resolveOfficialCatalogPaths(options: CatalogOptions): string[] {
   }
 
   return candidates.filter((entry, index, all) => entry && all.indexOf(entry) === index);
+}
+
+function normalizeCatalogPathEntries(entries: readonly string[]): string[] {
+  const normalized: string[] = [];
+  for (const entry of entries) {
+    const trimmed = entry.trim();
+    if (trimmed) {
+      normalized.push(trimmed);
+    }
+  }
+  return normalized;
 }
 
 function loadOfficialCatalogEntries(options: CatalogOptions): ChannelPluginCatalogEntry[] {
