@@ -183,7 +183,7 @@ async function previewStoreCleanup(params: {
   activeKey?: string;
   fixMissing?: boolean;
 }) {
-  const beforeStore = loadSessionStore(params.target.storePath, { skipCache: true });
+  const beforeStore = loadSessionStore(params.target.storePath);
   const previewStore = structuredClone(beforeStore);
   const staleKeys = new Set<string>();
   const cappedKeys = new Set<string>();
@@ -364,7 +364,7 @@ export async function runSessionsCleanup(params: {
         };
         return missing;
       });
-      const afterStore = loadSessionStore(target.storePath, { skipCache: true });
+      const afterStore = loadSessionStore(target.storePath);
       const unreferencedArtifacts =
         mode === "warn"
           ? {
