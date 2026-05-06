@@ -80,7 +80,6 @@ import {
   formatDuplicateTelegramTokenReason,
   telegramConfigAdapter,
 } from "./shared.js";
-import { detectTelegramLegacyStateMigrations } from "./state-migrations.js";
 import { collectTelegramStatusIssues } from "./status-issues.js";
 import { parseTelegramTarget } from "./targets.js";
 import {
@@ -880,8 +879,6 @@ export const telegramPlugin = createChatChannelPlugin({
         await resolveTelegramTargets({ cfg, accountId, inputs, kind }),
     },
     lifecycle: {
-      detectLegacyStateMigrations: ({ cfg, env }) =>
-        detectTelegramLegacyStateMigrations({ cfg, env }),
       onAccountConfigChanged: async ({ prevCfg, nextCfg, accountId }) => {
         const previousToken = resolveTelegramAccount({ cfg: prevCfg, accountId }).token.trim();
         const nextToken = resolveTelegramAccount({ cfg: nextCfg, accountId }).token.trim();
