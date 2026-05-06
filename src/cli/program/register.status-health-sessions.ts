@@ -171,18 +171,18 @@ export function registerStatusHealthSessionsCommands(program: Command) {
 
   sessionsCmd
     .command("cleanup")
-    .description("Run session-store maintenance now")
-    .option("--store <path>", "Path to session store (default: resolved from config)")
+    .description("Run SQLite session-row maintenance now")
+    .option("--store <path>", "Legacy/custom session store override (default: config)")
     .option("--agent <id>", "Agent id to maintain (default: configured default agent)")
     .option("--all-agents", "Run maintenance across all configured agents", false)
     .option("--dry-run", "Preview maintenance actions without writing", false)
     .option("--enforce", "Apply maintenance even when configured mode is warn", false)
     .option(
       "--fix-missing",
-      "Remove store entries whose transcript files are missing (bypasses age/count retention)",
+      "Remove store entries whose SQLite transcript events are missing (bypasses age/count retention)",
       false,
     )
-    .option("--active-key <key>", "Protect this session key from budget-eviction")
+    .option("--active-key <key>", "Protect this session key from enforce-mode retention")
     .option("--json", "Output JSON", false)
     .addHelpText(
       "after",
@@ -191,14 +191,14 @@ export function registerStatusHealthSessionsCommands(program: Command) {
           ["openclaw sessions cleanup --dry-run", "Preview stale/cap cleanup."],
           [
             "openclaw sessions cleanup --dry-run --fix-missing",
-            "Also preview pruning entries with missing transcript files.",
+            "Also preview pruning entries with missing SQLite transcript events.",
           ],
           ["openclaw sessions cleanup --enforce", "Apply maintenance now."],
           ["openclaw sessions cleanup --agent work --dry-run", "Preview one agent store."],
           ["openclaw sessions cleanup --all-agents --dry-run", "Preview all agent stores."],
           [
             "openclaw sessions cleanup --enforce --store ./tmp/sessions.json",
-            "Use a specific store.",
+            "Use a legacy/custom store override.",
           ],
         ])}`,
     )

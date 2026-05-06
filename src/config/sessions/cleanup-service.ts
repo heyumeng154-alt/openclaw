@@ -1,15 +1,8 @@
-import path from "node:path";
 import { resolveDefaultAgentId } from "../../agents/agent-scope.js";
 import { resolveStoredSessionOwnerAgentId } from "../../gateway/session-store-key.js";
 import { getLogger } from "../../logging/logger.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
-import {
-  enforceSessionDiskBudget,
-  pruneUnreferencedSessionArtifacts,
-  resolveSessionArtifactCanonicalPathsForEntry,
-  type SessionUnreferencedArtifactSweepResult,
-} from "./disk-budget.js";
 import { resolveStorePath } from "./paths.js";
 import { resolveMaintenanceConfig } from "./store-maintenance-runtime.js";
 import {
@@ -34,12 +27,7 @@ export type SessionsCleanupOptions = SessionStoreSelectionOptions & {
   fixMissing?: boolean;
 };
 
-export type SessionCleanupAction =
-  | "keep"
-  | "prune-missing"
-  | "prune-stale"
-  | "cap-overflow"
-  | "evict-budget";
+export type SessionCleanupAction = "keep" | "prune-missing" | "prune-stale" | "cap-overflow";
 
 export type SessionCleanupSummary = {
   agentId: string;
@@ -51,8 +39,6 @@ export type SessionCleanupSummary = {
   missing: number;
   pruned: number;
   capped: number;
-  unreferencedArtifacts: SessionUnreferencedArtifactSweepResult;
-  diskBudget: Awaited<ReturnType<typeof enforceSessionDiskBudget>>;
   wouldMutate: boolean;
   applied?: true;
   appliedCount?: number;
@@ -75,7 +61,6 @@ export type SessionsCleanupRunResult = {
     missingKeys: Set<string>;
     staleKeys: Set<string>;
     cappedKeys: Set<string>;
-    budgetEvictedKeys: Set<string>;
   }>;
   appliedSummaries: SessionCleanupSummary[];
 };
@@ -86,7 +71,6 @@ type AppliedSessionCleanupReport = {
   afterCount: number;
   pruned: number;
   capped: number;
-  diskBudget: Awaited<ReturnType<typeof enforceSessionDiskBudget>>;
 };
 
 export function resolveSessionCleanupAction(params: {
@@ -94,7 +78,6 @@ export function resolveSessionCleanupAction(params: {
   missingKeys: Set<string>;
   staleKeys: Set<string>;
   cappedKeys: Set<string>;
-  budgetEvictedKeys: Set<string>;
 }): SessionCleanupAction {
   if (params.missingKeys.has(params.key)) {
     return "prune-missing";
@@ -104,9 +87,6 @@ export function resolveSessionCleanupAction(params: {
   }
   if (params.cappedKeys.has(params.key)) {
     return "cap-overflow";
-  }
-  if (params.budgetEvictedKeys.has(params.key)) {
-    return "evict-budget";
   }
   return "keep";
 }
@@ -151,27 +131,6 @@ function pruneMissingTranscriptEntries(params: {
   return removed;
 }
 
-function addEntryArtifactPathsToSet(params: {
-  paths: Set<string>;
-  store: Record<string, SessionEntry>;
-  storePath: string;
-  keys: ReadonlySet<string>;
-}): void {
-  const sessionsDir = path.dirname(params.storePath);
-  for (const key of params.keys) {
-    const entry = params.store[key];
-    if (!entry) {
-      continue;
-    }
-    for (const artifactPath of resolveSessionArtifactCanonicalPathsForEntry({
-      sessionsDir,
-      entry,
-    })) {
-      params.paths.add(artifactPath);
-    }
-  }
-}
-
 async function previewStoreCleanup(params: {
   target: SessionStoreTarget;
   maintenance: ResolvedSessionMaintenanceConfig;
@@ -208,54 +167,9 @@ async function previewStoreCleanup(params: {
       cappedKeys.add(key);
     },
   });
-  const entryCleanupArtifactPaths = new Set<string>();
-  addEntryArtifactPathsToSet({
-    paths: entryCleanupArtifactPaths,
-    store: beforeStore,
-    storePath: params.target.storePath,
-    keys: staleKeys,
-  });
-  addEntryArtifactPathsToSet({
-    paths: entryCleanupArtifactPaths,
-    store: beforeStore,
-    storePath: params.target.storePath,
-    keys: cappedKeys,
-  });
-  const beforeBudgetStore = structuredClone(previewStore);
-  const budgetRemovedFilePaths = new Set<string>();
-  const diskBudget = await enforceSessionDiskBudget({
-    store: previewStore,
-    storePath: params.target.storePath,
-    activeSessionKey: params.activeKey,
-    maintenance: params.maintenance,
-    warnOnly: false,
-    dryRun: true,
-    onRemoveFile: (canonicalPath) => {
-      budgetRemovedFilePaths.add(canonicalPath);
-    },
-  });
-  const unreferencedArtifacts = await pruneUnreferencedSessionArtifacts({
-    store: previewStore,
-    storePath: params.target.storePath,
-    olderThanMs: params.maintenance.pruneAfterMs,
-    dryRun: true,
-    excludeCanonicalPaths: new Set([...budgetRemovedFilePaths, ...entryCleanupArtifactPaths]),
-  });
-  const budgetEvictedKeys = new Set<string>();
-  for (const key of Object.keys(beforeBudgetStore)) {
-    if (!Object.hasOwn(previewStore, key)) {
-      budgetEvictedKeys.add(key);
-    }
-  }
   const beforeCount = Object.keys(beforeStore).length;
   const afterPreviewCount = Object.keys(previewStore).length;
-  const wouldMutate =
-    missing > 0 ||
-    pruned > 0 ||
-    capped > 0 ||
-    unreferencedArtifacts.removedFiles > 0 ||
-    (diskBudget?.removedEntries ?? 0) > 0 ||
-    (diskBudget?.removedFiles ?? 0) > 0;
+  const wouldMutate = missing > 0 || pruned > 0 || capped > 0;
 
   const summary: SessionCleanupSummary = {
     agentId: params.target.agentId,
@@ -267,8 +181,6 @@ async function previewStoreCleanup(params: {
     missing,
     pruned,
     capped,
-    unreferencedArtifacts,
-    diskBudget,
     wouldMutate,
   };
 
@@ -278,7 +190,6 @@ async function previewStoreCleanup(params: {
     missingKeys,
     staleKeys,
     cappedKeys,
-    budgetEvictedKeys,
   };
 }
 
@@ -328,29 +239,13 @@ export async function runSessionsCleanup(params: {
           : 0;
         let pruned = 0;
         let capped = 0;
-        let diskBudget: AppliedSessionCleanupReport["diskBudget"] = null;
-        if (mode === "warn") {
-          diskBudget = await enforceSessionDiskBudget({
-            store,
-            storePath: target.storePath,
-            activeSessionKey: opts.activeKey,
-            maintenance,
-            warnOnly: true,
-          });
-        } else {
+        if (mode === "enforce") {
           const preserveKeys = opts.activeKey ? new Set([opts.activeKey]) : undefined;
           pruned = pruneStaleEntries(store, maintenance.pruneAfterMs, {
             preserveKeys,
           });
           capped = capEntryCount(store, maintenance.maxEntries, {
             preserveKeys,
-          });
-          diskBudget = await enforceSessionDiskBudget({
-            store,
-            storePath: target.storePath,
-            activeSessionKey: opts.activeKey,
-            maintenance,
-            warnOnly: false,
           });
         }
         appliedReportRef.current = {
@@ -359,25 +254,10 @@ export async function runSessionsCleanup(params: {
           afterCount: Object.keys(store).length,
           pruned,
           capped,
-          diskBudget,
         };
         return missing;
       });
       const afterStore = loadSessionStore(target.storePath);
-      const unreferencedArtifacts =
-        mode === "warn"
-          ? {
-              scannedFiles: 0,
-              removedFiles: 0,
-              freedBytes: 0,
-              olderThanMs: maintenance.pruneAfterMs,
-            }
-          : await pruneUnreferencedSessionArtifacts({
-              store: afterStore,
-              storePath: target.storePath,
-              olderThanMs: maintenance.pruneAfterMs,
-              dryRun: false,
-            });
       const preview = previewResults.find(
         (result) => result.summary.storePath === target.storePath,
       );
@@ -395,14 +275,10 @@ export async function runSessionsCleanup(params: {
                 missing: 0,
                 pruned: 0,
                 capped: 0,
-                unreferencedArtifacts,
-                diskBudget: null,
                 wouldMutate: false,
               }),
               dryRun: false,
-              unreferencedArtifacts,
-              wouldMutate:
-                (preview?.summary.wouldMutate ?? false) || unreferencedArtifacts.removedFiles > 0,
+              wouldMutate: preview?.summary.wouldMutate ?? false,
               applied: true,
               appliedCount: Object.keys(afterStore).length,
             }
@@ -416,15 +292,8 @@ export async function runSessionsCleanup(params: {
               missing: missingApplied,
               pruned: appliedReport.pruned,
               capped: appliedReport.capped,
-              unreferencedArtifacts,
-              diskBudget: appliedReport.diskBudget,
               wouldMutate:
-                missingApplied > 0 ||
-                appliedReport.pruned > 0 ||
-                appliedReport.capped > 0 ||
-                unreferencedArtifacts.removedFiles > 0 ||
-                (appliedReport.diskBudget?.removedEntries ?? 0) > 0 ||
-                (appliedReport.diskBudget?.removedFiles ?? 0) > 0,
+                missingApplied > 0 || appliedReport.pruned > 0 || appliedReport.capped > 0,
               applied: true,
               appliedCount: Object.keys(afterStore).length,
             };
