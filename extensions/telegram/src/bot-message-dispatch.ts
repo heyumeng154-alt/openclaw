@@ -218,9 +218,7 @@ function resolveTelegramReasoningLevel(params: {
   }
   try {
     const storePath = telegramDeps.resolveStorePath(cfg.session?.store, { agentId });
-    const store = (telegramDeps.loadSessionStore ?? loadSessionStore)(storePath, {
-      skipCache: true,
-    });
+    const store = (telegramDeps.loadSessionStore ?? loadSessionStore)(storePath);
     const entry = resolveSessionStoreEntry({ store, sessionKey }).existing;
     const level = entry?.reasoningLevel;
     if (level === "on" || level === "stream") {
@@ -933,9 +931,7 @@ export const dispatchTelegramMessage = async ({
         const storePath = telegramDeps.resolveStorePath(cfg.session?.store, {
           agentId: route.agentId,
         });
-        const store = (telegramDeps.loadSessionStore ?? loadSessionStore)(storePath, {
-          skipCache: true,
-        });
+        const store = (telegramDeps.loadSessionStore ?? loadSessionStore)(storePath);
         const sessionKey = ctxPayload.SessionKey;
         if (sessionKey) {
           const entry = resolveSessionStoreEntry({ store, sessionKey }).existing;
