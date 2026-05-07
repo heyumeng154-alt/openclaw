@@ -542,6 +542,7 @@ Docs: https://docs.openclaw.ai
 - WhatsApp: route proactive phone-number sends through Baileys LID forward mappings when available, so LID-addressed contacts receive agent messages instead of creating sender-only ghost chats. Fixes #67378. (#74925) Thanks @edenfunf.
 - WhatsApp: send captioned `MEDIA:` directive auto-replies once instead of emitting an empty media message before the captioned media reply. (#78770) Thanks @ai-hpc.
 - Hooks/cron: log returned `/hooks/agent` isolated-run errors and failed cron jobs with cron diagnostic summaries, so rejected `payload.model` values are visible instead of looking like accepted-but-missing runs. Fixes #78597. (#78655) Thanks @kevinslin.
+- Browser/downloads: route explicit and managed browser download output directories through `fs-safe` validation before staging final files, so symlinked output roots are rejected before writes. (#78780) Thanks @jesse-merhi.
 
 ## 2026.5.3-1
 
