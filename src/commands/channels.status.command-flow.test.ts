@@ -36,6 +36,8 @@ vi.mock("../config/config.js", () => ({
 }));
 
 vi.mock("../plugins/channel-plugin-ids.js", () => ({
+  listExplicitConfiguredChannelIdsForConfig: (config: { channels?: Record<string, unknown> }) =>
+    Object.keys(config.channels ?? {}),
   listConfiguredChannelIdsForReadOnlyScope: (params: unknown) =>
     mocks.listConfiguredChannelIdsForReadOnlyScope(params),
 }));
@@ -238,6 +240,28 @@ describe("channelsStatusCommand SecretRef fallback flow", () => {
     expect(joined).toContain("token:config");
     expect(joined).not.toContain("secret unavailable in this command path");
     expect(joined).not.toContain("token:config (unavailable)");
+  });
+
+  it("shows missing official external plugin repair hints in config-only output", async () => {
+    mocks.callGateway.mockRejectedValue(new Error("gateway closed"));
+    mocks.requireValidConfigSnapshot.mockResolvedValue({
+      channels: { feishu: { appId: "cli_xxx" } },
+    });
+    mocks.resolveCommandConfigWithSecrets.mockResolvedValue({
+      resolvedConfig: { channels: { feishu: { appId: "cli_xxx" } } },
+      effectiveConfig: { channels: { feishu: { appId: "cli_xxx" } } },
+      diagnostics: [],
+    });
+    mocks.listChannelPlugins.mockReturnValue([]);
+    const { runtime, logs } = createCapturingTestRuntime();
+
+    await channelsStatusCommand({ probe: false }, runtime as never);
+
+    const joined = logs.join("\n");
+    expect(joined).toContain("Missing official external plugins:");
+    expect(joined).toContain(
+      "Feishu: Install the official external plugin with: openclaw plugins install @openclaw/feishu, or run: openclaw doctor --fix.",
+    );
   });
 
   it("keeps JSON fallback structured without rendering config-only text", async () => {

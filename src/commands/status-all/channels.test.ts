@@ -3,6 +3,7 @@ import { buildChannelsTable } from "./channels.js";
 
 const mocks = vi.hoisted(() => ({
   resolveInspectedChannelAccount: vi.fn(),
+  listReadOnlyChannelPluginsForConfig: vi.fn(),
 }));
 
 const discordPlugin = {
@@ -18,12 +19,17 @@ vi.mock("../../channels/account-inspection.js", () => ({
 }));
 
 vi.mock("../../channels/plugins/read-only.js", () => ({
-  listReadOnlyChannelPluginsForConfig: () => [discordPlugin],
+  resolveReadOnlyChannelPluginsForConfig: () => ({
+    plugins: mocks.listReadOnlyChannelPluginsForConfig(),
+    configuredChannelIds: [],
+    missingConfiguredChannelIds: [],
+  }),
 }));
 
 describe("buildChannelsTable", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.listReadOnlyChannelPluginsForConfig.mockReturnValue([discordPlugin]);
     mocks.resolveInspectedChannelAccount.mockResolvedValue({
       account: {
         tokenStatus: "configured_unavailable",
@@ -78,5 +84,21 @@ describe("buildChannelsTable", () => {
         detail: expect.stringContaining("unavailable"),
       }),
     );
+  });
+
+  it("shows configured official external channels when the plugin is missing", async () => {
+    mocks.listReadOnlyChannelPluginsForConfig.mockReturnValue([]);
+
+    const table = await buildChannelsTable({ channels: { feishu: { appId: "cli_xxx" } } });
+
+    expect(table.rows).toContainEqual({
+      id: "feishu",
+      label: "Feishu",
+      enabled: true,
+      state: "warn",
+      detail:
+        "plugin not installed - run openclaw plugins install @openclaw/feishu or openclaw doctor --fix",
+    });
+    expect(mocks.resolveInspectedChannelAccount).not.toHaveBeenCalled();
   });
 });

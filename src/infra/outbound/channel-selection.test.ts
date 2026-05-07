@@ -5,7 +5,15 @@ const mocks = vi.hoisted(() => ({
   resolveOutboundChannelPlugin: vi.fn(),
 }));
 
-const deliverableChannelIds = vi.hoisted(() => ["alpha", "beta", "gamma", "delta", "muted"]);
+const deliverableChannelIds = vi.hoisted(() => [
+  "alpha",
+  "beta",
+  "gamma",
+  "delta",
+  "feishu",
+  "muted",
+  "whatsapp",
+]);
 
 vi.mock("../../channels/plugins/index.js", () => ({
   getLoadedChannelPlugin: vi.fn(),
@@ -229,8 +237,24 @@ describe("resolveMessageChannelSelection", () => {
       expectedMessage: "Channel is unavailable: alpha",
     },
     {
+      setup: () => {
+        mocks.resolveOutboundChannelPlugin.mockReturnValue(undefined);
+      },
+      params: {
+        cfg: { channels: { feishu: { appId: "cli_xxx" } } } as never,
+        channel: "feishu",
+      },
+      expectedMessage:
+        "Channel is unavailable: feishu. Install the official external plugin with: openclaw plugins install @openclaw/feishu, or run: openclaw doctor --fix.",
+    },
+    {
       params: { cfg: {} as never },
       expectedMessage: "Channel is required (no configured channels detected).",
+    },
+    {
+      params: { cfg: { channels: { whatsapp: { enabled: true } } } as never },
+      expectedMessage:
+        "Channel is required (no available channels detected). Configured official external channel WhatsApp is missing its plugin. Install the official external plugin with: openclaw plugins install @openclaw/whatsapp, or run: openclaw doctor --fix.",
     },
     {
       setup: () => {
