@@ -47,6 +47,7 @@ export function extractMentionTargets(
       openId: m.id.open_id!,
       name: m.name,
       key: m.key,
+      mentionedType: m.mentioned_type,
     }));
 }
 

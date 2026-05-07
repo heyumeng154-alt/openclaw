@@ -33,6 +33,7 @@ import {
   resolveFeishuGroupSession,
   resolveFeishuMediaList,
 } from "./bot-content.js";
+import { enrichMentionBotNames, resolveFeishuBotName } from "./bot-name.js";
 import {
   evaluateSupplementalContextVisibility,
   normalizeAgentId,
@@ -49,10 +50,12 @@ import { extractMentionTargets, isMentionForwardRequest } from "./mention.js";
 import {
   hasExplicitFeishuGroupConfig,
   normalizeFeishuAllowEntry,
+  resolveFeishuAllowBots,
   resolveFeishuDmIngressAccess,
   resolveFeishuGroupConfig,
   resolveFeishuGroupConversationIngressAccess,
   resolveFeishuGroupSenderActivationIngressAccess,
+  resolveFeishuMentionForward,
   resolveFeishuReplyPolicy,
 } from "./policy.js";
 import { resolveFeishuReasoningPreviewEnabled } from "./reasoning-preview.js";
@@ -273,6 +276,9 @@ export function parseFeishuMessageEvent(
     // Keep the historical field name, but fall back to user_id when open_id is unavailable
     // (common in some mobile app deliveries).
     senderOpenId: senderFallbackId,
+    // Webhook events emit "user" or "bot"; default to "user" for legacy
+    // payloads that don't carry the field.
+    senderType: event.sender.sender_type === "bot" ? "bot" : "user",
     chatType: event.message.chat_type,
     mentionedBot,
     hasAnyMention,
@@ -317,8 +323,16 @@ export function buildFeishuAgentBody(params: {
   quotedContent?: string;
   permissionErrorForAgent?: FeishuPermissionError;
   botOpenId?: string;
+  /**
+   * When true (default), the reply pipeline auto-@s `ctx.mentionTargets` on the
+   * agent's behalf, so the hint tells the agent NOT to write @s itself.
+   * When false (mentionForward disabled), auto-@ is suppressed and the hint
+   * exposes the open_ids so the agent can @-mention manually when needed.
+   */
+  mentionAutoPrepend?: boolean;
 }): string {
   const { ctx, quotedContent, permissionErrorForAgent, botOpenId } = params;
+  const mentionAutoPrepend = params.mentionAutoPrepend ?? true;
   let messageBody = ctx.content;
   if (quotedContent) {
     messageBody = `[Replying to: "${quotedContent}"]\n\n${ctx.content}`;
@@ -339,10 +353,20 @@ export function buildFeishuAgentBody(params: {
   }
 
   if (ctx.mentionTargets && ctx.mentionTargets.length > 0) {
-    const targetNames = ctx.mentionTargets
-      .map((t) => formatMentionNameForAgentContext(t.name))
-      .join(", ");
-    messageBody += `\n\n[System: Feishu users mentioned in the incoming message, for context only: ${targetNames}. Do not notify or mention these users solely because they are listed here.]`;
+    if (mentionAutoPrepend) {
+      const targetNames = ctx.mentionTargets
+        .map((t) => formatMentionNameForAgentContext(t.name))
+        .join(", ");
+      messageBody += `\n\n[System: Your reply will automatically @mention: ${targetNames}. Do not write @xxx yourself.]`;
+    } else {
+      const list = ctx.mentionTargets
+        .map((t) => `${formatMentionNameForAgentContext(t.name)} (open_id: ${t.openId})`)
+        .join(", ");
+      messageBody +=
+        `\n\n[System: This message @mentions the following users: ${list}. ` +
+        `Use these open_ids when performing actions involving these users. ` +
+        `To @mention in a reply, use <at user_id="ou_xxx">Name</at>; plain "@Name" won't notify.]`;
+    }
   }
 
   // Keep message_id on its own line so shared message-id hint stripping can parse it reliably.
@@ -469,6 +493,33 @@ export async function handleFeishuMessage(params: {
   let ctx = parseFeishuMessageEvent(event, botOpenId, botName);
   const isGroup = isFeishuGroupChatType(ctx.chatType);
   const isDirect = !isGroup;
+
+  // Mention-forward gate. parseFeishuMessageEvent unconditionally extracts
+  // mentionTargets when the inbound is a forward request. The gate controls
+  // *behavior* (auto-@ on reply via reply-dispatcher.ts), not *visibility*:
+  // ctx.mentionTargets stays intact so the system-prompt hint built in
+  // buildFeishuAgentBody can still expose the open_ids the agent needs for
+  // *manual* @-mention. Default-off (manager-worker friendly) for both group
+  // and DM: stops the dispatcher from auto-prepending <at> tags on every
+  // reply, while letting the agent decide when to @ someone explicitly.
+  const mentionForwardEnabled =
+    ctx.mentionTargets && ctx.mentionTargets.length > 0
+      ? resolveFeishuMentionForward({
+          groupConfig: isGroup
+            ? resolveFeishuGroupConfig({ cfg: feishuCfg, groupId: ctx.chatId })
+            : undefined,
+          accountConfig: feishuCfg,
+          channelConfig: cfg.channels?.feishu,
+        })
+      : true;
+  if (ctx.mentionTargets && ctx.mentionTargets.length > 0 && !mentionForwardEnabled) {
+    log(
+      `feishu[${account.accountId}]: mention-forward disabled by config; ` +
+        `auto-@ suppressed for ${ctx.mentionTargets.length} target(s) on ${ctx.messageId} ` +
+        `(open_ids still exposed to agent for manual @)`,
+    );
+  }
+
   const senderUserId = normalizeOptionalString(event.sender.sender_id.user_id);
 
   // Handle merge_forward messages: fetch full message via API then expand sub-messages
@@ -505,8 +556,11 @@ export async function handleFeishuMessage(params: {
 
   // Resolve sender display name (best-effort) so the agent can attribute messages correctly.
   // Optimization: skip if disabled to save API quota (Feishu free tier limit).
+  // Bot-authored senders are deferred to after the allowBots gate (see below); the
+  // contact API path here is known-incompatible with bot open_ids and would only
+  // burn a guaranteed-fail call for messages that may then be dropped anyway.
   let permissionErrorForAgent: FeishuPermissionError | undefined;
-  if (feishuCfg?.resolveSenderNames ?? true) {
+  if ((feishuCfg?.resolveSenderNames ?? true) && ctx.senderType !== "bot") {
     const senderResult = await resolveFeishuSenderName({
       account,
       senderId: ctx.senderOpenId,
@@ -546,6 +600,65 @@ export async function handleFeishuMessage(params: {
   const groupConfig = isGroup
     ? resolveFeishuGroupConfig({ cfg: feishuCfg, groupId: ctx.chatId })
     : undefined;
+
+  // Layer 1 — self-filter (unconditional). Drops messages this very bot authored.
+  // Mirrors the precedent in monitor.account.ts:113 (reactions) and
+  // monitor.comment.ts (drive comments) and prevents webhook self-echo loops
+  // once `im:message.group_at_msg.include_bot:readonly` is granted.
+  if (botOpenId && ctx.senderOpenId === botOpenId) {
+    log(
+      `feishu[${account.accountId}]: dropping bot-self message ${ctx.messageId} (senderOpenId === botOpenId)`,
+    );
+    return;
+  }
+
+  // Layer 2 — other-bot gating (config-driven). Only engages when the inbound
+  // sender_type is "bot"; user senders fall through to the existing pipeline.
+  if (ctx.senderType === "bot") {
+    const allowBots = resolveFeishuAllowBots({
+      groupConfig,
+      accountConfig: feishuCfg,
+      channelConfig: cfg.channels?.feishu,
+    });
+    if (allowBots === false) {
+      log(
+        `feishu[${account.accountId}]: dropping bot-authored message ${ctx.messageId} (allowBots=false)`,
+      );
+      return;
+    }
+    if (allowBots === "mentions" && !ctx.mentionedBot) {
+      log(
+        `feishu[${account.accountId}]: dropping bot-authored message ${ctx.messageId} (allowBots=mentions, not @-mentioned)`,
+      );
+      return;
+    }
+    log(
+      `feishu[${account.accountId}]: admitting bot-authored message ${ctx.messageId} (allowBots=${String(
+        allowBots,
+      )}, mentionedBot=${ctx.mentionedBot})`,
+    );
+
+    // Resolve bot sender display name via the bot-only OpenAPI. Weak dependency:
+    // any failure (including missing scope) is silent and falls back to ou_id.
+    if (feishuCfg?.resolveSenderNames ?? true) {
+      const botName = await resolveFeishuBotName({
+        account,
+        openId: ctx.senderOpenId,
+        log,
+      });
+      if (botName) {
+        ctx = { ...ctx, senderName: botName };
+      }
+    }
+  }
+
+  // Enrich bot @-mention targets that arrived without a name in the webhook
+  // payload. No-op when no `mentioned_type === "bot"` target needs filling,
+  // which is the case for every message under the existing default config.
+  if (ctx.mentionTargets && (feishuCfg?.resolveSenderNames ?? true)) {
+    await enrichMentionBotNames({ account, targets: ctx.mentionTargets, log });
+  }
+
   const groupSessionScope = isGroup
     ? resolveConfiguredFeishuGroupSessionScope({ groupConfig, feishuCfg })
     : null;
@@ -576,6 +689,7 @@ export async function handleFeishuMessage(params: {
       );
     }
   }
+
   const effectiveGroupSenderAllowFrom = isGroup
     ? (groupConfig?.allowFrom?.length ?? 0) > 0
       ? (groupConfig?.allowFrom ?? [])
@@ -1043,6 +1157,7 @@ export async function handleFeishuMessage(params: {
       quotedContent,
       permissionErrorForAgent,
       botOpenId,
+      mentionAutoPrepend: mentionForwardEnabled,
     });
     const envelopeFrom = isGroup ? `${ctx.chatId}:${ctx.senderOpenId}` : ctx.senderOpenId;
     if (permissionErrorForAgent) {
@@ -1485,6 +1600,7 @@ export async function handleFeishuMessage(params: {
             replyInThread,
             rootId: ctx.rootId,
             threadReply,
+            mentionTargets: mentionForwardEnabled ? ctx.mentionTargets : undefined,
             accountId: account.accountId,
             identity,
             messageCreateTimeMs,
@@ -1650,6 +1766,7 @@ export async function handleFeishuMessage(params: {
         replyInThread,
         rootId: ctx.rootId,
         threadReply,
+        mentionTargets: mentionForwardEnabled ? ctx.mentionTargets : undefined,
         accountId: account.accountId,
         identity,
         messageCreateTimeMs,

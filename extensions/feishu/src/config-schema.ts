@@ -148,6 +148,42 @@ const TopicSessionModeSchema = z.enum(["disabled", "enabled"]).optional();
 const ReactionNotificationModeSchema = z.enum(["off", "own", "all"]).optional();
 
 /**
+ * Whether to respond to messages authored by other bots in group chats.
+ * - true (default): accept bot-authored messages, still subject to allowlists / requireMention
+ * - false: drop bot-authored messages entirely
+ * - "mentions": accept only when this bot is @-mentioned (useful when requireMention is off)
+ *
+ * Default `true` mirrors pre-feature behavior: before the bot-aware gate existed,
+ * the inbound pipeline did not branch on sender_type, so bot messages flowed
+ * through allowFrom / requireMention identically to user messages. Keeping
+ * the default at `true` preserves that behavior; safety against self-loops is
+ * provided by the unconditional self-filter in bot.ts.
+ *
+ * Receiving bot-mentioned-by-bot events also requires the Feishu scope
+ * `im:message.group_at_msg.include_bot:readonly`; without it the platform
+ * will not deliver these events regardless of this setting.
+ */
+const AllowBotsSchema = z.union([z.boolean(), z.literal("mentions")]).optional();
+
+/**
+ * Whether the bot's reply auto-prepends @-mentions of the OTHER recipients
+ * mentioned in the inbound message. Applies to both group and DM.
+ *
+ * - false (default): no auto-@. The system-prompt hint still exposes
+ *   forward targets and their open_ids so the agent can decide when to
+ *   @ them manually via <at user_id="ou_xxx">Name</at>. Manager-worker
+ *   friendly: no forced cross-@ cascades between peer workers.
+ * - true: dispatcher auto-prepends <at> for each forward target on every
+ *   reply chunk, and the system prompt tells the agent NOT to write @
+ *   itself. Use for "transfer/forward" flows that should fan out to all
+ *   named recipients automatically.
+ *
+ * Resolution priority: group → account → channel → false. (DM messages
+ * skip the group tier.)
+ */
+const MentionForwardSchema = z.boolean().optional();
+
+/**
  * Reply-in-thread mode for group chats.
  * - "disabled" (default): Bot replies are normal inline replies
  * - "enabled": Bot replies create or continue a Feishu topic thread
@@ -164,6 +200,8 @@ export const FeishuGroupSchema = z
     skills: z.array(z.string()).optional(),
     enabled: z.boolean().optional(),
     allowFrom: z.array(z.union([z.string(), z.number()])).optional(),
+    allowBots: AllowBotsSchema,
+    mentionForward: MentionForwardSchema,
     systemPrompt: z.string().optional(),
     groupSessionScope: GroupSessionScopeSchema,
     topicSessionMode: TopicSessionModeSchema,
@@ -182,6 +220,8 @@ const FeishuSharedConfigShape = {
   groupPolicy: GroupPolicySchema.optional(),
   groupAllowFrom: z.array(z.union([z.string(), z.number()])).optional(),
   groupSenderAllowFrom: z.array(z.union([z.string(), z.number()])).optional(),
+  allowBots: AllowBotsSchema,
+  mentionForward: MentionForwardSchema,
   requireMention: z.boolean().optional(),
   groups: z.record(z.string(), FeishuGroupSchema.optional()).optional(),
   historyLimit: z.number().int().min(0).optional(),

@@ -3,11 +3,12 @@ import { describe, expect, it } from "vitest";
 import { FeishuConfigSchema } from "./config-schema.js";
 import {
   hasExplicitFeishuGroupConfig,
+  resolveFeishuAllowBots,
   resolveFeishuGroupConfig,
   resolveFeishuGroupSenderActivationIngressAccess,
   resolveFeishuReplyPolicy,
 } from "./policy.js";
-import type { FeishuConfig } from "./types.js";
+import type { FeishuConfig, FeishuGroupConfig } from "./types.js";
 
 function createCfg(feishu: Record<string, unknown>): OpenClawConfig {
   return {
@@ -219,5 +220,68 @@ describe("resolveFeishuGroupSenderActivationIngressAccess", () => {
         senderUserId: "on_user_123",
       }),
     ).resolves.toBe("allow");
+  });
+});
+
+describe("resolveFeishuAllowBots", () => {
+  it("defaults to true when no level sets allowBots", () => {
+    expect(resolveFeishuAllowBots({})).toBe(true);
+  });
+
+  it("returns the channel-level value when nothing else set", () => {
+    expect(
+      resolveFeishuAllowBots({
+        channelConfig: createFeishuConfig({ allowBots: true }),
+      }),
+    ).toBe(true);
+  });
+
+  it("account-level overrides channel-level", () => {
+    expect(
+      resolveFeishuAllowBots({
+        accountConfig: createFeishuConfig({ allowBots: false }),
+        channelConfig: createFeishuConfig({ allowBots: true }),
+      }),
+    ).toBe(false);
+  });
+
+  it("group-level overrides account- and channel-level", () => {
+    const groupConfig: FeishuGroupConfig = { allowBots: "mentions" };
+    expect(
+      resolveFeishuAllowBots({
+        groupConfig,
+        accountConfig: createFeishuConfig({ allowBots: true }),
+        channelConfig: createFeishuConfig({ allowBots: false }),
+      }),
+    ).toBe("mentions");
+  });
+
+  it("preserves the literal 'mentions' through resolution", () => {
+    expect(
+      resolveFeishuAllowBots({
+        accountConfig: createFeishuConfig({ allowBots: "mentions" }),
+      }),
+    ).toBe("mentions");
+  });
+
+  it("treats explicit false at a higher priority as authoritative", () => {
+    const groupConfig: FeishuGroupConfig = { allowBots: false };
+    expect(
+      resolveFeishuAllowBots({
+        groupConfig,
+        accountConfig: createFeishuConfig({ allowBots: true }),
+      }),
+    ).toBe(false);
+  });
+
+  it("falls through to lower levels when a higher level is undefined", () => {
+    const groupConfig: FeishuGroupConfig = {};
+    expect(
+      resolveFeishuAllowBots({
+        groupConfig,
+        accountConfig: createFeishuConfig({ allowBots: "mentions" }),
+        channelConfig: createFeishuConfig({ allowBots: true }),
+      }),
+    ).toBe("mentions");
   });
 });

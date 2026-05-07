@@ -12,7 +12,9 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import { normalizeOptionalLowercaseString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { ChannelGroupContext } from "../runtime-api.js";
 import { detectIdType } from "./targets.js";
-import type { FeishuConfig } from "./types.js";
+import type { FeishuConfig, FeishuGroupConfig } from "./types.js";
+
+export type FeishuAllowBots = boolean | "mentions";
 
 type FeishuDmPolicy = "open" | "pairing" | "allowlist" | "disabled";
 type FeishuGroupPolicy = "open" | "allowlist" | "disabled" | "allowall";
@@ -318,4 +320,74 @@ export function resolveFeishuReplyPolicy(params: {
           ? resolvedCfg.requireMention
           : params.groupPolicy !== "open",
   };
+}
+
+/**
+ * Resolve `allowBots` for an inbound bot-authored message.
+ * Priority: group-level → account-level → channel-level → true.
+ *
+ * `true` (default) admits bot messages, still subject to existing allowFrom / requireMention.
+ * `false` drops bot messages entirely.
+ * `"mentions"` admits bot messages only when the bot is @-mentioned.
+ *
+ * Default `true` preserves pre-feature behavior: the inbound pipeline used to
+ * not branch on sender_type, so bot messages were treated identically to user
+ * messages. Self-loop safety is provided by the unconditional self-filter in
+ * bot.ts; this gate is for opt-in tightening, not a default safety net.
+ *
+ * Receiving the events at all also requires the Feishu app scope
+ * `im:message.group_at_msg.include_bot:readonly`; this resolver does not
+ * verify that — see docs/channels/feishu.md.
+ */
+export function resolveFeishuAllowBots(params: {
+  groupConfig?: FeishuGroupConfig;
+  accountConfig?: FeishuConfig;
+  channelConfig?: FeishuConfig;
+}): FeishuAllowBots {
+  const candidates: Array<FeishuAllowBots | undefined> = [
+    params.groupConfig?.allowBots,
+    params.accountConfig?.allowBots,
+    params.channelConfig?.allowBots,
+  ];
+  for (const candidate of candidates) {
+    if (candidate !== undefined) {
+      return candidate;
+    }
+  }
+  return true;
+}
+
+/**
+ * Resolve `mentionForward` for an inbound message that has the bot mentioned
+ * alongside other recipients (applies to both group and DM).
+ *
+ * `false` (default) suppresses dispatcher auto-@ on the bot's reply. The
+ * agent still sees forward targets and their open_ids in the system-prompt
+ * hint, so it can decide on its own when to @ via `<at user_id="ou_xxx">`.
+ * This is the manager-worker friendly default: no forced cross-@ cascades.
+ *
+ * `true` re-enables the dispatcher auto-@: every reply auto-prepends `<at>`
+ * for each forward target, and the system prompt tells the agent NOT to
+ * write @ itself. Use this for "transfer/forward" flows where the bot is
+ * relaying a request that should fan out to all named recipients.
+ *
+ * Priority: group → account → channel → false. DM messages skip the group
+ * tier (no group config to consult) and resolve via account → channel → false.
+ */
+export function resolveFeishuMentionForward(params: {
+  groupConfig?: FeishuGroupConfig;
+  accountConfig?: FeishuConfig;
+  channelConfig?: FeishuConfig;
+}): boolean {
+  const candidates: Array<boolean | undefined> = [
+    params.groupConfig?.mentionForward,
+    params.accountConfig?.mentionForward,
+    params.channelConfig?.mentionForward,
+  ];
+  for (const candidate of candidates) {
+    if (candidate !== undefined) {
+      return candidate;
+    }
+  }
+  return false;
 }
