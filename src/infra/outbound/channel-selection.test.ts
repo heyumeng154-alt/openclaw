@@ -149,6 +149,10 @@ describe("resolveMessageChannelSelection", () => {
   beforeEach(() => {
     mocks.listChannelPlugins.mockReset();
     mocks.listChannelPlugins.mockReturnValue([]);
+    mocks.resolveOutboundChannelPlugin.mockReset();
+    mocks.resolveOutboundChannelPlugin.mockImplementation(({ channel }: { channel: string }) => ({
+      id: channel,
+    }));
   });
 
   it.each([
@@ -252,9 +256,24 @@ describe("resolveMessageChannelSelection", () => {
       expectedMessage: "Channel is required (no configured channels detected).",
     },
     {
+      setup: () => {
+        mocks.resolveOutboundChannelPlugin.mockReturnValue(undefined);
+      },
       params: { cfg: { channels: { whatsapp: { enabled: true } } } as never },
       expectedMessage:
         "Channel is required (no available channels detected). Configured official external channel WhatsApp is missing its plugin. Install the official external plugin with: openclaw plugins install @openclaw/whatsapp, or run: openclaw doctor --fix.",
+    },
+    {
+      setup: () => {
+        mocks.listChannelPlugins.mockReturnValue([
+          makePlugin({
+            id: "whatsapp",
+            isConfigured: async () => false,
+          }),
+        ]);
+      },
+      params: { cfg: { channels: { whatsapp: { enabled: true } } } as never },
+      expectedMessage: "Channel is required (no configured channels detected).",
     },
     {
       setup: () => {
