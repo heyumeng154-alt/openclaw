@@ -272,18 +272,25 @@ export function normalizeMentions(
   if (!mentions || mentions.length === 0) {
     return text;
   }
-  const escaped = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const esc = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const escapeName = (value: string) => value.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  // Only strip the leading self-mention (the "addressing" mention at text start).
+  // Non-leading self-mentions carry semantic meaning and are preserved as <at> tags.
+  const leadingSelfKey = botStripId
+    ? mentions.find((m) => m.id.open_id === botStripId && text.trimStart().startsWith(m.key))?.key
+    : undefined;
+
   let result = text;
   for (const mention of mentions) {
     const mentionId = mention.id.open_id;
-    const replacement =
-      botStripId && mentionId === botStripId
-        ? ""
-        : mentionId
-          ? `<at user_id="${mentionId}">${escapeName(mention.name)}</at>`
-          : `@${mention.name}`;
-    result = result.replace(new RegExp(escaped(mention.key), "g"), () => replacement).trim();
+    const shouldStrip = mention.key === leadingSelfKey;
+    const replacement = shouldStrip
+      ? ""
+      : mentionId
+        ? `<at user_id="${mentionId}">${escapeName(mention.name)}</at>`
+        : `@${mention.name}`;
+    result = result.replace(new RegExp(esc(mention.key), "g"), () => replacement).trim();
   }
   return result;
 }

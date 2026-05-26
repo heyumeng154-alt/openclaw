@@ -123,4 +123,35 @@ describe("normalizeMentions (via parseFeishuMessageEvent)", () => {
     );
     expect(ctx.content).toBe('<at user_id="ou_x">&lt;script&gt;</at> test');
   });
+
+  it("preserves non-leading self-mention as <at> tag (semantic reference)", () => {
+    const ctx = parseFeishuMessageEvent(
+      makeEvent("@_user_1 interview @_bot_1, @_bot_1 answers", [
+        { key: "@_user_1", name: "Interviewer", id: { open_id: "ou_interviewer" } },
+        { key: "@_bot_1", name: "Bot", id: { open_id: "ou_bot" } },
+      ]),
+      BOT_OPEN_ID,
+    );
+    // Bot self-mention is NOT leading (text starts with @_user_1), so both
+    // occurrences are preserved as <at> tags to keep semantic context.
+    expect(ctx.content).toBe(
+      '<at user_id="ou_interviewer">Interviewer</at> interview <at user_id="ou_bot">Bot</at>, <at user_id="ou_bot">Bot</at> answers',
+    );
+  });
+
+  it("strips only the leading self-mention, preserves later one with different key", () => {
+    // Feishu gives each mention occurrence a unique key, even for the same person.
+    const ctx = parseFeishuMessageEvent(
+      makeEvent("@_bot_1 tell @_user_2 about @_bot_3", [
+        { key: "@_bot_1", name: "Bot", id: { open_id: "ou_bot" } },
+        { key: "@_user_2", name: "Other", id: { open_id: "ou_other" } },
+        { key: "@_bot_3", name: "Bot", id: { open_id: "ou_bot" } },
+      ]),
+      BOT_OPEN_ID,
+    );
+    // @_bot_1 is leading self-mention → stripped; @_bot_3 is non-leading → preserved
+    expect(ctx.content).toBe(
+      'tell <at user_id="ou_other">Other</at> about <at user_id="ou_bot">Bot</at>',
+    );
+  });
 });

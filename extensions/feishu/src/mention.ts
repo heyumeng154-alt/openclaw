@@ -31,6 +31,7 @@ export function extractMentionTargets(
 ): MentionTarget[] {
   const mentions = event.message.mentions ?? [];
 
+  const seen = new Set<string>();
   return mentions
     .filter((m) => {
       if (isFeishuBroadcastMention(m)) {
@@ -41,7 +42,15 @@ export function extractMentionTargets(
         return false;
       }
       // Must have open_id
-      return !!m.id.open_id;
+      if (!m.id.open_id) {
+        return false;
+      }
+      // Deduplicate by open_id (same person mentioned multiple times)
+      if (seen.has(m.id.open_id)) {
+        return false;
+      }
+      seen.add(m.id.open_id);
+      return true;
     })
     .map((m) => ({
       openId: m.id.open_id!,

@@ -46,6 +46,7 @@ import { createFeishuClient } from "./client.js";
 import { finalizeFeishuMessageProcessing, tryRecordMessagePersistent } from "./dedup.js";
 import { resolveFeishuMessageDedupeKey } from "./dedupe-key.js";
 import { maybeCreateDynamicAgent } from "./dynamic-agent.js";
+import { recordMention, recordSender } from "./mention-registry.js";
 import { extractMentionTargets, isMentionForwardRequest } from "./mention.js";
 import {
   hasExplicitFeishuGroupConfig,
@@ -318,7 +319,13 @@ function formatMentionNameForAgentContext(name: string): string {
 export function buildFeishuAgentBody(params: {
   ctx: Pick<
     FeishuMessageContext,
-    "content" | "senderName" | "senderOpenId" | "mentionTargets" | "messageId" | "hasAnyMention"
+    | "content"
+    | "senderName"
+    | "senderOpenId"
+    | "mentionTargets"
+    | "messageId"
+    | "hasAnyMention"
+    | "chatType"
   >;
   quotedContent?: string;
   permissionErrorForAgent?: FeishuPermissionError;
@@ -330,9 +337,12 @@ export function buildFeishuAgentBody(params: {
    * exposes the open_ids so the agent can @-mention manually when needed.
    */
   mentionAutoPrepend?: boolean;
+  /** When true, agent uses message(action=send) to post; when false, agent replies directly. */
+  messageToolOnly?: boolean;
 }): string {
   const { ctx, quotedContent, permissionErrorForAgent, botOpenId } = params;
   const mentionAutoPrepend = params.mentionAutoPrepend ?? true;
+  const messageToolOnly = params.messageToolOnly ?? false;
   let messageBody = ctx.content;
   if (quotedContent) {
     messageBody = `[Replying to: "${quotedContent}"]\n\n${ctx.content}`;
@@ -350,6 +360,23 @@ export function buildFeishuAgentBody(params: {
     if (botIdHint) {
       messageBody += `\n[System: If user_id is "${botIdHint}", that mention refers to you.]`;
     }
+  }
+
+  // L0 guidance: in group chats, bots only receive messages that explicitly @ them.
+  // Tell the agent to write @Name — L2 outbound normalizer converts to <at> tags.
+  // Wording adapts to delivery mode and explicitly counters the "auto-reply = auto-notify"
+  // misconception that causes agents to skip @-mentions.
+  if (isFeishuGroupChatType(ctx.chatType)) {
+    const mentionHow = messageToolOnly
+      ? `in the message parameter when using message(action=send)`
+      : `in your reply`;
+    messageBody +=
+      `\n\n[System: IMPORTANT — Feishu group @mention rule: ` +
+      `Posting a message to this group does NOT notify anyone. ` +
+      `Bots can ONLY see messages that explicitly @mention them. ` +
+      `Replying to or quoting someone does NOT count as @mentioning them. ` +
+      `If you need a bot or person to see your message, you MUST write @TheirName ${mentionHow}. ` +
+      `The system will convert it to a real mention automatically.]`;
   }
 
   if (ctx.mentionTargets && ctx.mentionTargets.length > 0) {
@@ -591,6 +618,28 @@ export async function handleFeishuMessage(params: {
   if (ctx.mentionTargets && ctx.mentionTargets.length > 0) {
     const names = ctx.mentionTargets.map((t) => t.name).join(", ");
     log(`feishu[${account.accountId}]: detected @ forward request, targets: [${names}]`);
+  }
+
+  // R1: accumulate inbound mentions into the per-chat registry (name → openId).
+  const mentions = event.message.mentions ?? [];
+  for (const m of mentions) {
+    if (m.id.open_id && m.name) {
+      recordMention({
+        accountId: account.accountId,
+        chatId: ctx.chatId,
+        name: m.name,
+        openId: m.id.open_id,
+      });
+    }
+  }
+  // R4: accumulate sender into the registry.
+  if (ctx.senderName && ctx.senderOpenId) {
+    recordSender({
+      accountId: account.accountId,
+      chatId: ctx.chatId,
+      name: ctx.senderName,
+      openId: ctx.senderOpenId,
+    });
   }
 
   const historyLimit = Math.max(
@@ -1152,12 +1201,17 @@ export async function handleFeishuMessage(params: {
         groupSession?.groupSessionScope === "group_topic_sender");
 
     const envelopeOptions = core.channel.reply.resolveEnvelopeFormatOptions(cfg);
+    // Group chats default to message_tool_only unless configured otherwise.
+    const groupVisibleReplies =
+      isGroup &&
+      (cfg.messages?.groupChat?.visibleReplies ?? cfg.messages?.visibleReplies) === "automatic";
     const messageBody = buildFeishuAgentBody({
       ctx: agentFacingCtx,
       quotedContent,
       permissionErrorForAgent,
       botOpenId,
       mentionAutoPrepend: mentionForwardEnabled,
+      messageToolOnly: isGroup && !groupVisibleReplies,
     });
     const envelopeFrom = isGroup ? `${ctx.chatId}:${ctx.senderOpenId}` : ctx.senderOpenId;
     if (permissionErrorForAgent) {
