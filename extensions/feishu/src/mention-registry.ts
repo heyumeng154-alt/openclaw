@@ -33,17 +33,21 @@ function chatKey(accountId: string, chatId: string): string {
 function getOrCreateChat(accountId: string, chatId: string): ChatRegistry {
   const key = chatKey(accountId, chatId);
   let chat = store.get(key);
-  if (!chat) {
-    // Evict oldest chat if at capacity.
-    if (store.size >= MAX_CHATS) {
-      const oldest = store.keys().next().value;
-      if (oldest !== undefined) {
-        store.delete(oldest);
-      }
-    }
-    chat = new Map();
+  if (chat) {
+    // Refresh LRU position for chat-level eviction.
+    store.delete(key);
     store.set(key, chat);
+    return chat;
   }
+  // Evict oldest chat if at capacity.
+  if (store.size >= MAX_CHATS) {
+    const oldest = store.keys().next().value;
+    if (oldest !== undefined) {
+      store.delete(oldest);
+    }
+  }
+  chat = new Map();
+  store.set(key, chat);
   return chat;
 }
 
@@ -53,13 +57,8 @@ function upsert(chat: ChatRegistry, name: string, openId: string, source: Regist
     return;
   }
   const existing = chat.get(normalized);
-  // R1 (mention) is more precise than R4 (sender); don't downgrade.
-  if (
-    existing &&
-    existing.source === "mention" &&
-    source === "sender" &&
-    existing.openId === openId
-  ) {
+  // R1 (mention) is more precise than R4 (sender); never downgrade.
+  if (existing && existing.source === "mention" && source === "sender") {
     existing.updatedAt = Date.now();
     return;
   }
@@ -116,11 +115,14 @@ export function lookupMention(params: {
   const entry = chat.get(normalized);
   if (!entry) {
     // Fuzzy fallback: try stripping whitespace/special chars
+    const strippedNormalized = normalized.replace(/\s+/g, "");
     for (const [k, v] of chat) {
-      if (k.replace(/\s+/g, "") === normalized.replace(/\s+/g, "")) {
+      if (k.replace(/\s+/g, "") === strippedNormalized) {
         if (v.updatedAt + ENTRY_TTL_MS > Date.now()) {
           return v;
         }
+        // Clean up expired entry on the way out.
+        chat.delete(k);
       }
     }
     return undefined;

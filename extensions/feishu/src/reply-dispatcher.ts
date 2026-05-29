@@ -390,7 +390,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       if (streaming?.isActive()) {
         statusLine = "";
         params.runtime.log?.(
-          `feishu[${account.accountId}]: closeStreaming streamText (${streamText.length} chars): ${streamText.slice(0, 200)}`,
+          `feishu[${account.accountId}]: closeStreaming streamText (${streamText.length} chars)`,
         );
         // L2: normalize mentions in streamed text before final card close.
         const l2Stream = normalizeOutboundMentions({

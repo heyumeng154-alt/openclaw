@@ -24,6 +24,9 @@ const nameCache = new Map<string, CacheEntry>();
 type BreakerState = { failuresInRow: number; openUntil: number };
 const breakerByAccount = new Map<string, BreakerState>();
 
+// In-flight dedup: concurrent resolves for the same ou share one promise.
+const inflightByKey = new Map<string, Promise<string | undefined>>();
+
 type BotBatchOk = {
   code?: number;
   msg?: string;
@@ -280,12 +283,29 @@ export async function resolveFeishuBotName(params: {
   openId: string;
   log: FeishuLogger;
 }): Promise<string | undefined> {
-  const map = await resolveFeishuBotNames({
-    account: params.account,
-    openIds: [params.openId],
-    log: params.log,
-  });
-  return map.get(params.openId.trim());
+  const ou = params.openId.trim();
+  if (!ou) {
+    return undefined;
+  }
+  const key = cacheKey(params.account.accountId, ou);
+  const inflight = inflightByKey.get(key);
+  if (inflight) {
+    return inflight;
+  }
+  const promise = (async () => {
+    const map = await resolveFeishuBotNames({
+      account: params.account,
+      openIds: [ou],
+      log: params.log,
+    });
+    return map.get(ou);
+  })();
+  inflightByKey.set(key, promise);
+  try {
+    return await promise;
+  } finally {
+    inflightByKey.delete(key);
+  }
 }
 
 export async function enrichMentionBotNames(params: {
@@ -318,4 +338,5 @@ export async function enrichMentionBotNames(params: {
 export function resetBotNameStateForTests(): void {
   nameCache.clear();
   breakerByAccount.clear();
+  inflightByKey.clear();
 }

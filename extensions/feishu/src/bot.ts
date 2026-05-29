@@ -538,7 +538,7 @@ export async function handleFeishuMessage(params: {
           accountConfig: feishuCfg,
           channelConfig: cfg.channels?.feishu,
         })
-      : true;
+      : false;
   if (ctx.mentionTargets && ctx.mentionTargets.length > 0 && !mentionForwardEnabled) {
     log(
       `feishu[${account.accountId}]: mention-forward disabled by config; ` +
