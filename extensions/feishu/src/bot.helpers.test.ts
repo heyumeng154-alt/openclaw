@@ -27,7 +27,7 @@ describe("buildFeishuAgentBody", () => {
     });
 
     expect(body).toBe(
-      '[message_id: msg-42]\nSender Name: [Replying to: "previous message"]\n\nhello world\n\n[System: This message @mentions the following users: "Target User" (open_id: ou-target). Use these open_ids when performing actions involving these users. To @mention in a reply, use <at user_id="ou_xxx">Name</at>; plain "@Name" won\'t notify.]\n\n[System: The bot encountered a Feishu API permission error. Please inform the user about this issue and provide the permission grant URL for the admin to authorize. Permission grant URL: https://open.feishu.cn/app/cli_test]',
+      '[message_id: msg-42]\nSender Name: [Replying to: "previous message"]\n\nhello world\n\n[System: This message @mentions the following users: "Target User" (open_id: ou-target). Use these open_ids when performing actions involving these users. To @mention in a reply, use <at user_id="OPEN_ID">Name</at>.]\n\n[System: The bot encountered a Feishu API permission error. Please inform the user about this issue and provide the permission grant URL for the admin to authorize. Permission grant URL: https://open.feishu.cn/app/cli_test]',
     );
   });
 
@@ -66,8 +66,9 @@ describe("buildFeishuAgentBody", () => {
       '[System: This message @mentions the following users: "Alice" (open_id: ou-alice), "Bob" (open_id: ou-bob).',
     );
     expect(body).toContain("Use these open_ids when performing actions involving these users.");
-    expect(body).toContain('<at user_id="ou_xxx">Name</at>');
+    expect(body).toContain('<at user_id="OPEN_ID">Name</at>');
     expect(body).not.toContain("automatically @mention");
+    expect(body).not.toContain("plain");
   });
 });
 

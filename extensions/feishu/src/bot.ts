@@ -355,9 +355,8 @@ export function buildFeishuAgentBody(params: {
   }
 
   // L0 guidance: in group chats, bots only receive messages that explicitly @ them.
-  // Tell the agent to write @Name — L2 outbound normalizer converts to <at> tags.
-  // Wording adapts to delivery mode and explicitly counters the "auto-reply = auto-notify"
-  // misconception that causes agents to skip @-mentions.
+  // Teach the agent the canonical <at> syntax; L2 outbound normalizer also catches
+  // plain @Name as a fallback, but the prompt should not advertise that form.
   if (isFeishuGroupChatType(ctx.chatType)) {
     const mentionHow = messageToolOnly
       ? `in the message parameter when using message(action=send)`
@@ -367,8 +366,7 @@ export function buildFeishuAgentBody(params: {
       `Posting a message to this group does NOT notify anyone. ` +
       `Bots can ONLY see messages that explicitly @mention them. ` +
       `Replying to or quoting someone does NOT count as @mentioning them. ` +
-      `If you need a bot or person to see your message, you MUST write @TheirName ${mentionHow}. ` +
-      `The system will convert it to a real mention automatically.]`;
+      `If you need a bot or person to see your message, you MUST include <at user_id="OPEN_ID">Name</at> ${mentionHow}.]`;
   }
 
   if (ctx.mentionTargets && ctx.mentionTargets.length > 0) {
@@ -378,7 +376,7 @@ export function buildFeishuAgentBody(params: {
     messageBody +=
       `\n\n[System: This message @mentions the following users: ${list}. ` +
       `Use these open_ids when performing actions involving these users. ` +
-      `To @mention in a reply, use <at user_id="ou_xxx">Name</at>; plain "@Name" won't notify.]`;
+      `To @mention in a reply, use <at user_id="OPEN_ID">Name</at>.]`;
   }
 
   // Keep message_id on its own line so shared message-id hint stripping can parse it reliably.
