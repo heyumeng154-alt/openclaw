@@ -15,7 +15,7 @@ import { resolveFeishuRuntimeAccount } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
 import { sendMediaFeishu, shouldSuppressFeishuTextForVoiceMedia } from "./media.js";
 import type { MentionTarget } from "./mention-target.types.js";
-import { buildMentionedCardContent } from "./mention.js";
+import { buildMentionedCardContent, buildMentionedMessage } from "./mention.js";
 import { normalizeOutboundMentions } from "./outbound-mention.js";
 import {
   createReplyPrefixContext,
@@ -131,6 +131,8 @@ type CreateFeishuReplyDispatcherParams = {
   /** Epoch ms when the inbound message was created. Used to suppress typing
    *  indicators on old/replayed messages after context compaction (#30418). */
   messageCreateTimeMs?: number;
+  /** When mentionForward is enabled, the targets to auto-@ in replies. */
+  mentionTargets?: MentionTarget[];
 };
 
 export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherParams) {
@@ -146,6 +148,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     rootId,
     accountId,
     identity,
+    mentionTargets,
   } = params;
   const sendReplyToMessageId = skipReplyToInMessages ? undefined : replyToMessageId;
   const threadReplyMode = threadReply === true;
@@ -640,10 +643,13 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
           }
 
           if (useCard) {
+            const cardText = mentionTargets?.length
+              ? buildMentionedCardContent(mentionTargets, text)
+              : text;
             const cardHeader = resolveCardHeader(agentId, identity);
             const cardNote = resolveCardNote(agentId, identity, prefixContext.prefixContext);
             await sendChunkedTextReply({
-              text,
+              text: cardText,
               useCard: true,
               infoKind: info?.kind,
               sendChunk: async ({ chunk }) => {
@@ -661,8 +667,11 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
               },
             });
           } else {
+            const msgText = mentionTargets?.length
+              ? buildMentionedMessage(mentionTargets, text)
+              : text;
             await sendChunkedTextReply({
-              text,
+              text: msgText,
               useCard: false,
               infoKind: info?.kind,
               sendChunk: async ({ chunk }) => {
