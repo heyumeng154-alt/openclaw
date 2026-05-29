@@ -139,6 +139,19 @@ describe("normalizeMentions (via parseFeishuMessageEvent)", () => {
     );
   });
 
+  it("strips leading self-mention but preserves later same-key occurrence as <at> tag", () => {
+    // Feishu may deliver a single mention entry whose key appears twice in text.
+    // Only the leading (addressing) occurrence should be stripped; the later one
+    // carries semantic meaning and must be converted to an <at> tag.
+    const ctx = parseFeishuMessageEvent(
+      makeEvent("@_bot_1 请采访 @_bot_1 的设计思路", [
+        { key: "@_bot_1", name: "Bot", id: { open_id: "ou_bot" } },
+      ]),
+      BOT_OPEN_ID,
+    );
+    expect(ctx.content).toBe('请采访 <at user_id="ou_bot">Bot</at> 的设计思路');
+  });
+
   it("strips only the leading self-mention, preserves later one with different key", () => {
     // Feishu gives each mention occurrence a unique key, even for the same person.
     const ctx = parseFeishuMessageEvent(

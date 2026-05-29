@@ -284,13 +284,17 @@ export function normalizeMentions(
   let result = text;
   for (const mention of mentions) {
     const mentionId = mention.id.open_id;
-    const shouldStrip = mention.key === leadingSelfKey;
-    const replacement = shouldStrip
-      ? ""
-      : mentionId
-        ? `<at user_id="${mentionId}">${escapeName(mention.name)}</at>`
-        : `@${mention.name}`;
-    result = result.replace(new RegExp(esc(mention.key), "g"), () => replacement).trim();
+    const atTag = mentionId
+      ? `<at user_id="${mentionId}">${escapeName(mention.name)}</at>`
+      : `@${mention.name}`;
+    if (mention.key === leadingSelfKey) {
+      // Strip only the first (leading) occurrence; convert any remaining same-key
+      // occurrences to <at> tags so non-leading self-mentions are preserved.
+      result = result.replace(mention.key, "").trim();
+      result = result.replace(new RegExp(esc(mention.key), "g"), () => atTag).trim();
+    } else {
+      result = result.replace(new RegExp(esc(mention.key), "g"), () => atTag).trim();
+    }
   }
   return result;
 }
