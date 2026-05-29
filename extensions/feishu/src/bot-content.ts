@@ -272,18 +272,29 @@ export function normalizeMentions(
   if (!mentions || mentions.length === 0) {
     return text;
   }
-  const escaped = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const esc = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const escapeName = (value: string) => value.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  // Only strip the leading self-mention (the "addressing" mention at text start).
+  // Non-leading self-mentions carry semantic meaning and are preserved as <at> tags.
+  const leadingSelfKey = botStripId
+    ? mentions.find((m) => m.id.open_id === botStripId && text.trimStart().startsWith(m.key))?.key
+    : undefined;
+
   let result = text;
   for (const mention of mentions) {
     const mentionId = mention.id.open_id;
-    const replacement =
-      botStripId && mentionId === botStripId
-        ? ""
-        : mentionId
-          ? `<at user_id="${mentionId}">${escapeName(mention.name)}</at>`
-          : `@${mention.name}`;
-    result = result.replace(new RegExp(escaped(mention.key), "g"), () => replacement).trim();
+    const atTag = mentionId
+      ? `<at user_id="${mentionId}">${escapeName(mention.name)}</at>`
+      : `@${mention.name}`;
+    if (mention.key === leadingSelfKey) {
+      // Strip only the first (leading) occurrence; convert any remaining same-key
+      // occurrences to <at> tags so non-leading self-mentions are preserved.
+      result = result.replace(mention.key, "").trim();
+      result = result.replace(new RegExp(esc(mention.key), "g"), () => atTag).trim();
+    } else {
+      result = result.replace(new RegExp(esc(mention.key), "g"), () => atTag).trim();
+    }
   }
   return result;
 }

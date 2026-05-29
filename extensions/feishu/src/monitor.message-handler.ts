@@ -2,7 +2,6 @@ import { isRecord, readStringValue as readString } from "openclaw/plugin-sdk/str
 import type { ClawdbotConfig, HistoryEntry, PluginRuntime, RuntimeEnv } from "../runtime-api.js";
 import { resolveFeishuMessageDedupeKey } from "./dedupe-key.js";
 import type { FeishuMessageEvent } from "./event-types.js";
-import { isMentionForwardRequest } from "./mention.js";
 import {
   releaseFeishuMessageProcessing,
   tryBeginFeishuMessageProcessing,
@@ -131,12 +130,6 @@ function resolveFeishuDebounceMentions(params: {
   const { entries, botOpenId } = params;
   if (entries.length === 0) {
     return undefined;
-  }
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index];
-    if (isMentionForwardRequest(entry, botOpenId)) {
-      return mergeFeishuDebounceMentions([entry]);
-    }
   }
   const merged = mergeFeishuDebounceMentions(entries);
   if (!merged) {

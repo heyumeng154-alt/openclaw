@@ -14,6 +14,7 @@ import { stripReasoningTagsFromText } from "openclaw/plugin-sdk/text-chunking";
 import { resolveFeishuRuntimeAccount } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
 import { sendMediaFeishu, shouldSuppressFeishuTextForVoiceMedia } from "./media.js";
+import { normalizeOutboundMentions } from "./outbound-mention.js";
 import {
   createReplyPrefixContext,
   type ClawdbotConfig,
@@ -383,7 +384,26 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       await partialUpdateQueue;
       if (streaming?.isActive()) {
         statusLine = "";
-        const text = buildCombinedStreamText(reasoningText, streamText);
+        params.runtime.log?.(
+          `feishu[${account.accountId}]: closeStreaming streamText (${streamText.length} chars)`,
+        );
+        // L2: normalize mentions in streamed text before final card close.
+        const l2Stream = normalizeOutboundMentions({
+          text: streamText,
+          accountId: account.accountId,
+          chatId,
+        });
+        if (l2Stream.text !== streamText) {
+          params.runtime.log?.(
+            `feishu[${account.accountId}]: L2 normalized outbound mentions (streaming) in ${chatId}`,
+          );
+        }
+        if (l2Stream.failures.length > 0) {
+          params.runtime.log?.(
+            `feishu[${account.accountId}]: L2 unresolved @mentions (streaming): [${l2Stream.failures.join(", ")}] in ${chatId}`,
+          );
+        }
+        const text = buildCombinedStreamText(reasoningText, l2Stream.text);
         const finalNote = resolveCardNote(agentId, identity, prefixContext.prefixContext);
         await streaming.close(text, { note: finalNote });
         // Track the raw streamed text so the duplicate-final check in deliver()
@@ -525,7 +545,22 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         const payloadText =
           payload.isReasoning && payload.text ? formatReasoningMessage(payload.text) : payload.text;
         const reply = resolveSendableOutboundReplyParts({ ...payload, text: payloadText });
-        const text = reply.text;
+        // L2: normalize AI-output mention variants before sending.
+        const rawText = reply.text;
+        const l2Result = rawText
+          ? normalizeOutboundMentions({ text: rawText, accountId: account.accountId, chatId })
+          : { text: rawText, failures: [] as string[] };
+        const text = l2Result.text;
+        if (rawText && text !== rawText) {
+          params.runtime.log?.(
+            `feishu[${account.accountId}]: L2 normalized outbound mentions in ${chatId}`,
+          );
+        }
+        if (l2Result.failures.length > 0) {
+          params.runtime.log?.(
+            `feishu[${account.accountId}]: L2 unresolved @mentions: [${l2Result.failures.join(", ")}] in ${chatId}`,
+          );
+        }
         const hasText = reply.hasText;
         const hasMedia = reply.hasMedia;
         const hasVoiceMedia =
