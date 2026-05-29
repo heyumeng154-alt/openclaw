@@ -14,8 +14,6 @@ import { stripReasoningTagsFromText } from "openclaw/plugin-sdk/text-chunking";
 import { resolveFeishuRuntimeAccount } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
 import { sendMediaFeishu, shouldSuppressFeishuTextForVoiceMedia } from "./media.js";
-import type { MentionTarget } from "./mention-target.types.js";
-import { buildMentionedCardContent, buildMentionedMessage } from "./mention.js";
 import { normalizeOutboundMentions } from "./outbound-mention.js";
 import {
   createReplyPrefixContext,
@@ -131,8 +129,6 @@ type CreateFeishuReplyDispatcherParams = {
   /** Epoch ms when the inbound message was created. Used to suppress typing
    *  indicators on old/replayed messages after context compaction (#30418). */
   messageCreateTimeMs?: number;
-  /** When mentionForward is enabled, the targets to auto-@ in replies. */
-  mentionTargets?: MentionTarget[];
 };
 
 export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherParams) {
@@ -148,7 +144,6 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     rootId,
     accountId,
     identity,
-    mentionTargets,
   } = params;
   const sendReplyToMessageId = skipReplyToInMessages ? undefined : replyToMessageId;
   const threadReplyMode = threadReply === true;
@@ -408,10 +403,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
             `feishu[${account.accountId}]: L2 unresolved @mentions (streaming): [${l2Stream.failures.join(", ")}] in ${chatId}`,
           );
         }
-        let text = buildCombinedStreamText(reasoningText, l2Stream.text);
-        if (mentionTargets?.length) {
-          text = buildMentionedCardContent(mentionTargets, text);
-        }
+        const text = buildCombinedStreamText(reasoningText, l2Stream.text);
         const finalNote = resolveCardNote(agentId, identity, prefixContext.prefixContext);
         await streaming.close(text, { note: finalNote });
         // Track the raw streamed text so the duplicate-final check in deliver()
@@ -643,13 +635,10 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
           }
 
           if (useCard) {
-            const cardText = mentionTargets?.length
-              ? buildMentionedCardContent(mentionTargets, text)
-              : text;
             const cardHeader = resolveCardHeader(agentId, identity);
             const cardNote = resolveCardNote(agentId, identity, prefixContext.prefixContext);
             await sendChunkedTextReply({
-              text: cardText,
+              text,
               useCard: true,
               infoKind: info?.kind,
               sendChunk: async ({ chunk }) => {
@@ -667,11 +656,8 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
               },
             });
           } else {
-            const msgText = mentionTargets?.length
-              ? buildMentionedMessage(mentionTargets, text)
-              : text;
             await sendChunkedTextReply({
-              text: msgText,
+              text,
               useCard: false,
               infoKind: info?.kind,
               sendChunk: async ({ chunk }) => {

@@ -165,7 +165,7 @@ Resolution priority: group-level to account-level to channel-level to `true`.
 
 **Required Feishu scope**: receiving bot-mentioned-by-bot events requires `im:message.group_at_msg.include_bot:readonly`. Without it the platform will not deliver these events regardless of `allowBots`. Existing scopes (`im:message.group_at_msg`, `im:message.group_msg`, `im:message.p2p_msg`) do **not** include bot-authored messages. Feishu has no bot-to-bot p2p capability at the platform level, so this only applies in group chats.
 
-A built-in self-filter unconditionally drops messages where the sender's `open_id` matches this bot's own `open_id`, regardless of `allowBots`, to prevent webhook self-echo loops once the `include_bot` scope is granted. This is the floor for loop control; OpenClaw does not provide a per-chat rate limiter, so for chains of cooperating bots configure peer bots not to auto-@ each other on every reply (see `mentionForward` below).
+A built-in self-filter unconditionally drops messages where the sender's `open_id` matches this bot's own `open_id`, regardless of `allowBots`, to prevent webhook self-echo loops once the `include_bot` scope is granted. This is the floor for loop control; OpenClaw does not provide a per-chat rate limiter, so for chains of cooperating bots instruct each agent's system prompt to `<at>` peers only when it has a real reason to.
 
 Authorize peer bots through the existing `allowFrom` / `groupSenderAllowFrom` lists. Add the peer bot's `open_id` (visible from this app's perspective) just like a human user. There is no separate `peerBots` list.
 
@@ -186,32 +186,6 @@ Authorize peer bots through the existing `allowFrom` / `groupSenderAllowFrom` li
   },
 }
 ```
-
-### Auto-mention on forward replies (`mentionForward`)
-
-When an inbound message contains `@OpenClawBot @someone-else ...`, OpenClaw used to auto-prepend `<at>` tags for "someone-else" on every reply chunk so the bot's response would ping all the named recipients (the "forward request" pattern). That auto-cascade is helpful for transfer flows but disruptive for manager-worker bot orchestration.
-
-`mentionForward` controls this dispatcher behavior independently of whether the agent can see the targets:
-
-| Value               | Behavior                                                                                                                                                                                                           |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `false` _(default)_ | Reply pipeline does **not** auto-prepend `<at>` tags. The agent still receives every forward target's `open_id` via the system-prompt hint, so it can write `<at user_id="ou_xxx">Name</at>` manually when needed. |
-| `true`              | Reply pipeline auto-prepends `<at>` for each forward target on every reply chunk; the system prompt tells the agent not to write `@` itself.                                                                       |
-
-Resolution priority: group-level to account-level to channel-level to `false`. Applies to both groups and direct messages (DMs skip the group tier since there is no group config).
-
-```json5
-{
-  channels: {
-    feishu: {
-      // Re-enable the legacy auto-@ behavior for transfer/forward flows.
-      mentionForward: true,
-    },
-  },
-}
-```
-
-The agent always sees the forward targets — only the dispatcher's auto-`<at>` prepending is gated. Loop control between cooperating bots is best handled by keeping `mentionForward: false` (default) and instructing each agent's system prompt to `<at>` peers only when it has a real reason to.
 
 ---
 
@@ -635,10 +609,8 @@ Full configuration: [Gateway configuration](/gateway/configuration)
 | `channels.feishu.groupAllowFrom`                         | Group allowlist                                                                                                    | -                                    |
 | `channels.feishu.requireMention`                         | Require @mention in groups                                                                                         | `true`                               |
 | `channels.feishu.allowBots`                              | Respond to other bots: `true`/`false`/`"mentions"` (requires `im:message.group_at_msg.include_bot:readonly` scope) | `true`                               |
-| `channels.feishu.mentionForward`                         | Auto-prepend `<at>` for forward targets on bot replies (the agent still sees the targets via system-prompt hint)   | `false`                              |
 | `channels.feishu.groups.<chat_id>.requireMention`        | Per-group @mention override; explicit IDs also admit the group in allowlist mode                                   | inherited                            |
 | `channels.feishu.groups.<chat_id>.allowBots`             | Per-group `allowBots` override                                                                                     | inherited                            |
-| `channels.feishu.groups.<chat_id>.mentionForward`        | Per-group `mentionForward` override                                                                                | inherited                            |
 | `channels.feishu.groups.<chat_id>.enabled`               | Enable/disable a specific group                                                                                    | `true`                               |
 | `channels.feishu.dynamicAgentCreation.enabled`           | Enable automatic per-user agent creation                                                                           | `false`                              |
 | `channels.feishu.dynamicAgentCreation.workspaceTemplate` | Path template for dynamic agent workspaces                                                                         | `~/.openclaw/workspace-{agentId}`    |

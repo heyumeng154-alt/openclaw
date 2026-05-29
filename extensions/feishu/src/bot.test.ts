@@ -169,7 +169,6 @@ function createUnboundConfiguredRoute(
   return { bindingResolution: null, route };
 }
 
-
 function createFeishuBotRuntime(overrides: DeepPartial<PluginRuntime> = {}): PluginRuntime {
   return {
     channel: {
@@ -3966,194 +3965,6 @@ describe("handleFeishuMessage allowBots gating", () => {
   });
 });
 
-describe("handleFeishuMessage mentionForward gating", () => {
-  const BOT_OPEN_ID = "ou_self_bot";
-  const HUMAN_OPEN_ID = "ou_human";
-  const PEER_OPEN_ID = "ou_peer_human";
-
-  const mockFinalizeInboundContext = vi.fn((ctx: Record<string, unknown>) => ({
-    ...ctx,
-    CommandAuthorized: typeof ctx.CommandAuthorized === "boolean" ? ctx.CommandAuthorized : false,
-  }));
-  const mockDispatchReplyFromConfig = vi
-    .fn()
-    .mockResolvedValue({ queuedFinal: false, counts: { final: 1 } });
-  const mockWithReplyDispatcher = vi.fn(
-    async ({
-      dispatcher,
-      run,
-      onSettled,
-    }: Parameters<PluginRuntime["channel"]["reply"]["withReplyDispatcher"]>[0]) => {
-      try {
-        return await run();
-      } finally {
-        dispatcher.markComplete();
-        try {
-          await dispatcher.waitForIdle();
-        } finally {
-          await onSettled?.();
-        }
-      }
-    },
-  );
-  const mockShouldComputeCommandAuthorized = vi.fn(() => false);
-  const mockResolveCommandAuthorizedFromAuthorizers = vi.fn(() => false);
-  const mockReadAllowFromStore = vi.fn().mockResolvedValue([]);
-  const mockUpsertPairingRequest = vi.fn().mockResolvedValue({ code: "ABCDEFGH", created: false });
-  const mockBuildPairingReply = vi.fn(() => "Pairing response");
-
-  function makeForwardEvent(messageId: string): FeishuMessageEvent {
-    return {
-      sender: {
-        sender_id: { open_id: HUMAN_OPEN_ID },
-        sender_type: "user",
-      },
-      message: {
-        message_id: messageId,
-        chat_id: "oc_group_chat",
-        chat_type: "group",
-        message_type: "text",
-        content: JSON.stringify({ text: "@_user_1 @_user_2 please look at this" }),
-        mentions: [
-          { key: "@_user_1", name: "Self Bot", id: { open_id: BOT_OPEN_ID } },
-          { key: "@_user_2", name: "Peer Human", id: { open_id: PEER_OPEN_ID } },
-        ],
-      },
-    };
-  }
-
-  function makeChannelCfg(extra: Record<string, unknown>): ClawdbotConfig {
-    return {
-      session: { mainKey: "main", scope: "per-sender" },
-      channels: {
-        feishu: {
-          enabled: true,
-          groupPolicy: "open",
-          requireMention: false,
-          allowFrom: [HUMAN_OPEN_ID],
-          ...extra,
-        },
-      },
-    } as ClawdbotConfig;
-  }
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    resetBotNameStateForTests();
-    mockShouldComputeCommandAuthorized.mockReset().mockReturnValue(false);
-    mockGetMessageFeishu.mockReset().mockResolvedValue(null);
-    mockListFeishuThreadMessages.mockReset().mockResolvedValue([]);
-    mockResolveConfiguredBindingRoute.mockReset().mockImplementation(
-      ({
-        route,
-      }: {
-        route: NonNullable<ConfiguredBindingRoute>["route"];
-      }): ConfiguredBindingRoute => ({
-        bindingResolution: null,
-        route,
-      }),
-    );
-    mockEnsureConfiguredBindingRouteReady.mockReset().mockResolvedValue({ ok: true });
-    mockResolveBoundConversation.mockReset().mockReturnValue(null);
-    mockTouchBinding.mockReset();
-    mockResolveAgentRoute.mockReset().mockReturnValue(buildDefaultResolveRoute());
-    mockSendMessageFeishu
-      .mockReset()
-      .mockResolvedValue({ messageId: "reply-msg", chatId: "oc_group_chat" });
-    mockCreateFeishuClient.mockReturnValue({
-      contact: {
-        user: {
-          get: vi.fn().mockResolvedValue({ data: { user: { name: "Sender" } } }),
-        },
-      },
-    });
-    mockResolveFeishuReasoningPreviewEnabled.mockReset().mockReturnValue(false);
-    mockCreateFeishuReplyDispatcher.mockReset().mockReturnValue({
-      dispatcher: createReplyDispatcher(),
-      replyOptions: {},
-      markDispatchIdle: vi.fn(),
-    });
-    setFeishuRuntime(
-      createFeishuBotRuntime({
-        channel: {
-          reply: {
-            resolveEnvelopeFormatOptions:
-              resolveEnvelopeFormatOptionsMock as unknown as PluginRuntime["channel"]["reply"]["resolveEnvelopeFormatOptions"],
-            formatAgentEnvelope: vi.fn((params: { body: string }) => params.body),
-            finalizeInboundContext: mockFinalizeInboundContext as never,
-            dispatchReplyFromConfig: mockDispatchReplyFromConfig,
-            withReplyDispatcher: mockWithReplyDispatcher as never,
-          },
-          commands: {
-            shouldComputeCommandAuthorized: mockShouldComputeCommandAuthorized,
-            resolveCommandAuthorizedFromAuthorizers: mockResolveCommandAuthorizedFromAuthorizers,
-          },
-          pairing: {
-            readAllowFromStore: mockReadAllowFromStore,
-            upsertPairingRequest: mockUpsertPairingRequest,
-            buildPairingReply: mockBuildPairingReply,
-          },
-        },
-      }),
-    );
-  });
-
-  it("suppresses dispatcher auto-@ by default (mentionForward unset)", async () => {
-    await dispatchMessage({
-      cfg: makeChannelCfg({}),
-      botOpenId: BOT_OPEN_ID,
-      event: makeForwardEvent("msg-mf-default"),
-    });
-    expect(mockCreateFeishuReplyDispatcher).toHaveBeenCalledTimes(1);
-    expect(mockCreateFeishuReplyDispatcher).toHaveBeenCalledWith(
-      expect.objectContaining({ mentionTargets: undefined }),
-    );
-  });
-
-  it("preserves mentionTargets when mentionForward=true is explicitly set", async () => {
-    await dispatchMessage({
-      cfg: makeChannelCfg({ mentionForward: true }),
-      botOpenId: BOT_OPEN_ID,
-      event: makeForwardEvent("msg-mf-explicit-on"),
-    });
-    expect(mockCreateFeishuReplyDispatcher).toHaveBeenCalledTimes(1);
-    expect(mockCreateFeishuReplyDispatcher).toHaveBeenCalledWith(
-      expect.objectContaining({
-        mentionTargets: expect.arrayContaining([expect.objectContaining({ openId: PEER_OPEN_ID })]),
-      }),
-    );
-  });
-
-  it("suppresses dispatcher auto-@ when channel-level mentionForward=false", async () => {
-    await dispatchMessage({
-      cfg: makeChannelCfg({ mentionForward: false }),
-      botOpenId: BOT_OPEN_ID,
-      event: makeForwardEvent("msg-mf-channel-off"),
-    });
-    expect(mockCreateFeishuReplyDispatcher).toHaveBeenCalledTimes(1);
-    expect(mockCreateFeishuReplyDispatcher).toHaveBeenCalledWith(
-      expect.objectContaining({ mentionTargets: undefined }),
-    );
-  });
-
-  it("group-level mentionForward=false overrides channel-level mentionForward=true", async () => {
-    await dispatchMessage({
-      cfg: makeChannelCfg({
-        mentionForward: true,
-        groups: {
-          oc_group_chat: { mentionForward: false },
-        },
-      }),
-      botOpenId: BOT_OPEN_ID,
-      event: makeForwardEvent("msg-mf-group-override"),
-    });
-    expect(mockCreateFeishuReplyDispatcher).toHaveBeenCalledTimes(1);
-    expect(mockCreateFeishuReplyDispatcher).toHaveBeenCalledWith(
-      expect.objectContaining({ mentionTargets: undefined }),
-    );
-  });
-});
-
 describe("handleFeishuMessage bot mention name enrichment", () => {
   const BOT_OPEN_ID = "ou_self_bot";
   const HUMAN_OPEN_ID = "ou_human";
@@ -4312,8 +4123,7 @@ describe("handleFeishuMessage bot mention name enrichment", () => {
 
   it("fills missing bot mention names via the bot batch API", async () => {
     await dispatchMessage({
-      // mentionForward: true so dispatcher receives mentionTargets and we can assert enrichment.
-      cfg: makeChannelCfg({ mentionForward: true }),
+      cfg: makeChannelCfg({}),
       botOpenId: BOT_OPEN_ID,
       event: makeBotMentionEvent({ peerName: "", messageId: "msg-enrich-fill" }),
     });
@@ -4322,51 +4132,36 @@ describe("handleFeishuMessage bot mention name enrichment", () => {
     expect(lastBotBatchRequest?.url).toContain("/open-apis/bot/v3/bots/basic_batch");
     expect(lastBotBatchRequest?.url).toContain(`bot_ids=${PEER_BOT_OPEN_ID}`);
 
+    // mentionTargets are never passed to the dispatcher (mentionForward removed);
+    // enrichment still runs for ctx.mentionTargets used in system-prompt hints.
     expect(mockCreateFeishuReplyDispatcher).toHaveBeenCalledWith(
-      expect.objectContaining({
-        mentionTargets: expect.arrayContaining([
-          expect.objectContaining({
-            openId: PEER_BOT_OPEN_ID,
-            name: "Peer Bot",
-            mentionedType: "bot",
-          }),
-        ]),
-      }),
+      expect.objectContaining({ mentionTargets: undefined }),
     );
   });
 
   it("does not call the bot batch API when bot mention already has a name", async () => {
     await dispatchMessage({
-      // mentionForward: true so the dispatcher pass-through assertion below stays valid.
-      cfg: makeChannelCfg({ mentionForward: true }),
+      cfg: makeChannelCfg({}),
       botOpenId: BOT_OPEN_ID,
       event: makeBotMentionEvent({ peerName: "Already Named Bot", messageId: "msg-enrich-skip" }),
     });
 
     expect(lastBotBatchRequest).toBeUndefined();
     expect(mockCreateFeishuReplyDispatcher).toHaveBeenCalledWith(
-      expect.objectContaining({
-        mentionTargets: expect.arrayContaining([
-          expect.objectContaining({ openId: PEER_BOT_OPEN_ID, name: "Already Named Bot" }),
-        ]),
-      }),
+      expect.objectContaining({ mentionTargets: undefined }),
     );
   });
 
   it("does not call the bot batch API when resolveSenderNames=false", async () => {
     await dispatchMessage({
-      cfg: makeChannelCfg({ resolveSenderNames: false, mentionForward: true }),
+      cfg: makeChannelCfg({ resolveSenderNames: false }),
       botOpenId: BOT_OPEN_ID,
       event: makeBotMentionEvent({ peerName: "", messageId: "msg-enrich-disabled" }),
     });
 
     expect(lastBotBatchRequest).toBeUndefined();
     expect(mockCreateFeishuReplyDispatcher).toHaveBeenCalledWith(
-      expect.objectContaining({
-        mentionTargets: expect.arrayContaining([
-          expect.objectContaining({ openId: PEER_BOT_OPEN_ID, name: "" }),
-        ]),
-      }),
+      expect.objectContaining({ mentionTargets: undefined }),
     );
   });
 });

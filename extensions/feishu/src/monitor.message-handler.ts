@@ -1,10 +1,7 @@
 import { isRecord, readStringValue as readString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { ClawdbotConfig, HistoryEntry, PluginRuntime, RuntimeEnv } from "../runtime-api.js";
-import { resolveFeishuRuntimeAccount } from "./accounts.js";
 import { resolveFeishuMessageDedupeKey } from "./dedupe-key.js";
 import type { FeishuMessageEvent } from "./event-types.js";
-import { isMentionForwardRequest } from "./mention.js";
-import { resolveFeishuGroupConfig, resolveFeishuMentionForward } from "./policy.js";
 import {
   releaseFeishuMessageProcessing,
   tryBeginFeishuMessageProcessing,
@@ -129,19 +126,10 @@ function dedupeFeishuDebounceEntriesByDedupeKey(
 function resolveFeishuDebounceMentions(params: {
   entries: FeishuMessageEvent[];
   botOpenId?: string;
-  mentionForwardEnabled: boolean;
 }): FeishuMessageEvent["message"]["mentions"] | undefined {
-  const { entries, botOpenId, mentionForwardEnabled } = params;
+  const { entries, botOpenId } = params;
   if (entries.length === 0) {
     return undefined;
-  }
-  if (mentionForwardEnabled) {
-    for (let index = entries.length - 1; index >= 0; index -= 1) {
-      const entry = entries[index];
-      if (isMentionForwardRequest(entry, botOpenId)) {
-        return mergeFeishuDebounceMentions([entry]);
-      }
-    }
   }
   const merged = mergeFeishuDebounceMentions(entries);
   if (!merged) {
@@ -290,20 +278,9 @@ export function createFeishuMessageReceiveHandler({
         .map((entry) => resolveDebounceText(entry))
         .filter(Boolean)
         .join("\n");
-      const debounceAccount = resolveFeishuRuntimeAccount({ cfg, accountId });
-      const debounceGroupCfg = resolveFeishuGroupConfig({
-        cfg: debounceAccount.config,
-        groupId: dispatchEntry.message.chat_id,
-      });
-      const mentionForwardEnabled = resolveFeishuMentionForward({
-        groupConfig: debounceGroupCfg,
-        accountConfig: debounceAccount.config,
-        channelConfig: cfg.channels?.feishu,
-      });
       const mergedMentions = resolveFeishuDebounceMentions({
         entries: freshEntries,
         botOpenId: getBotOpenId(accountId),
-        mentionForwardEnabled,
       });
       await dispatchFeishuMessage({
         ...dispatchEntry,

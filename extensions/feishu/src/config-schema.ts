@@ -166,24 +166,6 @@ const ReactionNotificationModeSchema = z.enum(["off", "own", "all"]).optional();
 const AllowBotsSchema = z.union([z.boolean(), z.literal("mentions")]).optional();
 
 /**
- * Whether the bot's reply auto-prepends @-mentions of the OTHER recipients
- * mentioned in the inbound message. Applies to both group and DM.
- *
- * - false (default): no auto-@. The system-prompt hint still exposes
- *   forward targets and their open_ids so the agent can decide when to
- *   @ them manually via <at user_id="ou_xxx">Name</at>. Manager-worker
- *   friendly: no forced cross-@ cascades between peer workers.
- * - true: dispatcher auto-prepends <at> for each forward target on every
- *   reply chunk, and the system prompt tells the agent NOT to write @
- *   itself. Use for "transfer/forward" flows that should fan out to all
- *   named recipients automatically.
- *
- * Resolution priority: group → account → channel → false. (DM messages
- * skip the group tier.)
- */
-const MentionForwardSchema = z.boolean().optional();
-
-/**
  * Reply-in-thread mode for group chats.
  * - "disabled" (default): Bot replies are normal inline replies
  * - "enabled": Bot replies create or continue a Feishu topic thread
@@ -201,7 +183,6 @@ export const FeishuGroupSchema = z
     enabled: z.boolean().optional(),
     allowFrom: z.array(z.union([z.string(), z.number()])).optional(),
     allowBots: AllowBotsSchema,
-    mentionForward: MentionForwardSchema,
     systemPrompt: z.string().optional(),
     groupSessionScope: GroupSessionScopeSchema,
     topicSessionMode: TopicSessionModeSchema,
@@ -221,7 +202,6 @@ const FeishuSharedConfigShape = {
   groupAllowFrom: z.array(z.union([z.string(), z.number()])).optional(),
   groupSenderAllowFrom: z.array(z.union([z.string(), z.number()])).optional(),
   allowBots: AllowBotsSchema,
-  mentionForward: MentionForwardSchema,
   requireMention: z.boolean().optional(),
   groups: z.record(z.string(), FeishuGroupSchema.optional()).optional(),
   historyLimit: z.number().int().min(0).optional(),

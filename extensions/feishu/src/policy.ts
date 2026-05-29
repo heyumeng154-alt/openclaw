@@ -356,38 +356,3 @@ export function resolveFeishuAllowBots(params: {
   }
   return true;
 }
-
-/**
- * Resolve `mentionForward` for an inbound message that has the bot mentioned
- * alongside other recipients (applies to both group and DM).
- *
- * `false` (default) suppresses dispatcher auto-@ on the bot's reply. The
- * agent still sees forward targets and their open_ids in the system-prompt
- * hint, so it can decide on its own when to @ via `<at user_id="ou_xxx">`.
- * This is the manager-worker friendly default: no forced cross-@ cascades.
- *
- * `true` re-enables the dispatcher auto-@: every reply auto-prepends `<at>`
- * for each forward target, and the system prompt tells the agent NOT to
- * write @ itself. Use this for "transfer/forward" flows where the bot is
- * relaying a request that should fan out to all named recipients.
- *
- * Priority: group → account → channel → false. DM messages skip the group
- * tier (no group config to consult) and resolve via account → channel → false.
- */
-export function resolveFeishuMentionForward(params: {
-  groupConfig?: FeishuGroupConfig;
-  accountConfig?: FeishuConfig;
-  channelConfig?: FeishuConfig;
-}): boolean {
-  const candidates: Array<boolean | undefined> = [
-    params.groupConfig?.mentionForward,
-    params.accountConfig?.mentionForward,
-    params.channelConfig?.mentionForward,
-  ];
-  for (const candidate of candidates) {
-    if (candidate !== undefined) {
-      return candidate;
-    }
-  }
-  return false;
-}

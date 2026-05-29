@@ -56,7 +56,6 @@ import {
   resolveFeishuGroupConfig,
   resolveFeishuGroupConversationIngressAccess,
   resolveFeishuGroupSenderActivationIngressAccess,
-  resolveFeishuMentionForward,
   resolveFeishuReplyPolicy,
 } from "./policy.js";
 import { resolveFeishuReasoningPreviewEnabled } from "./reasoning-preview.js";
@@ -330,18 +329,10 @@ export function buildFeishuAgentBody(params: {
   quotedContent?: string;
   permissionErrorForAgent?: FeishuPermissionError;
   botOpenId?: string;
-  /**
-   * When true (default), the reply pipeline auto-@s `ctx.mentionTargets` on the
-   * agent's behalf, so the hint tells the agent NOT to write @s itself.
-   * When false (mentionForward disabled), auto-@ is suppressed and the hint
-   * exposes the open_ids so the agent can @-mention manually when needed.
-   */
-  mentionAutoPrepend?: boolean;
   /** When true, agent uses message(action=send) to post; when false, agent replies directly. */
   messageToolOnly?: boolean;
 }): string {
   const { ctx, quotedContent, permissionErrorForAgent, botOpenId } = params;
-  const mentionAutoPrepend = params.mentionAutoPrepend ?? true;
   const messageToolOnly = params.messageToolOnly ?? false;
   let messageBody = ctx.content;
   if (quotedContent) {
@@ -380,20 +371,13 @@ export function buildFeishuAgentBody(params: {
   }
 
   if (ctx.mentionTargets && ctx.mentionTargets.length > 0) {
-    if (mentionAutoPrepend) {
-      const targetNames = ctx.mentionTargets
-        .map((t) => formatMentionNameForAgentContext(t.name))
-        .join(", ");
-      messageBody += `\n\n[System: Your reply will automatically @mention: ${targetNames}. Do not write @xxx yourself.]`;
-    } else {
-      const list = ctx.mentionTargets
-        .map((t) => `${formatMentionNameForAgentContext(t.name)} (open_id: ${t.openId})`)
-        .join(", ");
-      messageBody +=
-        `\n\n[System: This message @mentions the following users: ${list}. ` +
-        `Use these open_ids when performing actions involving these users. ` +
-        `To @mention in a reply, use <at user_id="ou_xxx">Name</at>; plain "@Name" won't notify.]`;
-    }
+    const list = ctx.mentionTargets
+      .map((t) => `${formatMentionNameForAgentContext(t.name)} (open_id: ${t.openId})`)
+      .join(", ");
+    messageBody +=
+      `\n\n[System: This message @mentions the following users: ${list}. ` +
+      `Use these open_ids when performing actions involving these users. ` +
+      `To @mention in a reply, use <at user_id="ou_xxx">Name</at>; plain "@Name" won't notify.]`;
   }
 
   // Keep message_id on its own line so shared message-id hint stripping can parse it reliably.
@@ -520,32 +504,6 @@ export async function handleFeishuMessage(params: {
   let ctx = parseFeishuMessageEvent(event, botOpenId, botName);
   const isGroup = isFeishuGroupChatType(ctx.chatType);
   const isDirect = !isGroup;
-
-  // Mention-forward gate. parseFeishuMessageEvent unconditionally extracts
-  // mentionTargets when the inbound is a forward request. The gate controls
-  // *behavior* (auto-@ on reply via reply-dispatcher.ts), not *visibility*:
-  // ctx.mentionTargets stays intact so the system-prompt hint built in
-  // buildFeishuAgentBody can still expose the open_ids the agent needs for
-  // *manual* @-mention. Default-off (manager-worker friendly) for both group
-  // and DM: stops the dispatcher from auto-prepending <at> tags on every
-  // reply, while letting the agent decide when to @ someone explicitly.
-  const mentionForwardEnabled =
-    ctx.mentionTargets && ctx.mentionTargets.length > 0
-      ? resolveFeishuMentionForward({
-          groupConfig: isGroup
-            ? resolveFeishuGroupConfig({ cfg: feishuCfg, groupId: ctx.chatId })
-            : undefined,
-          accountConfig: feishuCfg,
-          channelConfig: cfg.channels?.feishu,
-        })
-      : false;
-  if (ctx.mentionTargets && ctx.mentionTargets.length > 0 && !mentionForwardEnabled) {
-    log(
-      `feishu[${account.accountId}]: mention-forward disabled by config; ` +
-        `auto-@ suppressed for ${ctx.mentionTargets.length} target(s) on ${ctx.messageId} ` +
-        `(open_ids still exposed to agent for manual @)`,
-    );
-  }
 
   const senderUserId = normalizeOptionalString(event.sender.sender_id.user_id);
 
@@ -1210,7 +1168,6 @@ export async function handleFeishuMessage(params: {
       quotedContent,
       permissionErrorForAgent,
       botOpenId,
-      mentionAutoPrepend: mentionForwardEnabled,
       messageToolOnly: isGroup && !groupVisibleReplies,
     });
     const envelopeFrom = isGroup ? `${ctx.chatId}:${ctx.senderOpenId}` : ctx.senderOpenId;
@@ -1654,7 +1611,7 @@ export async function handleFeishuMessage(params: {
             replyInThread,
             rootId: ctx.rootId,
             threadReply,
-            mentionTargets: mentionForwardEnabled ? ctx.mentionTargets : undefined,
+            mentionTargets: undefined,
             accountId: account.accountId,
             identity,
             messageCreateTimeMs,
@@ -1820,7 +1777,7 @@ export async function handleFeishuMessage(params: {
         replyInThread,
         rootId: ctx.rootId,
         threadReply,
-        mentionTargets: mentionForwardEnabled ? ctx.mentionTargets : undefined,
+        mentionTargets: undefined,
         accountId: account.accountId,
         identity,
         messageCreateTimeMs,
