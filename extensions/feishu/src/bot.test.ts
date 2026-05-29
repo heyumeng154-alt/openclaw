@@ -4131,12 +4131,6 @@ describe("handleFeishuMessage bot mention name enrichment", () => {
     expect(lastBotBatchRequest?.method).toBe("GET");
     expect(lastBotBatchRequest?.url).toContain("/open-apis/bot/v3/bots/basic_batch");
     expect(lastBotBatchRequest?.url).toContain(`bot_ids=${PEER_BOT_OPEN_ID}`);
-
-    // mentionTargets are never passed to the dispatcher (mentionForward removed);
-    // enrichment still runs for ctx.mentionTargets used in system-prompt hints.
-    expect(mockCreateFeishuReplyDispatcher).toHaveBeenCalledWith(
-      expect.objectContaining({ mentionTargets: undefined }),
-    );
   });
 
   it("does not call the bot batch API when bot mention already has a name", async () => {
@@ -4147,9 +4141,6 @@ describe("handleFeishuMessage bot mention name enrichment", () => {
     });
 
     expect(lastBotBatchRequest).toBeUndefined();
-    expect(mockCreateFeishuReplyDispatcher).toHaveBeenCalledWith(
-      expect.objectContaining({ mentionTargets: undefined }),
-    );
   });
 
   it("does not call the bot batch API when resolveSenderNames=false", async () => {
@@ -4160,8 +4151,5 @@ describe("handleFeishuMessage bot mention name enrichment", () => {
     });
 
     expect(lastBotBatchRequest).toBeUndefined();
-    expect(mockCreateFeishuReplyDispatcher).toHaveBeenCalledWith(
-      expect.objectContaining({ mentionTargets: undefined }),
-    );
   });
 });

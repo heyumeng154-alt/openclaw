@@ -61,12 +61,14 @@ export function extractMentionTargets(
 }
 
 /**
- * Check if message is a mention forward request
+ * Whether to expose the inbound message's other-user mentions to the agent
+ * (via ctx.mentionTargets → system-prompt hint), so it can @-mention them back
+ * with proper open_ids when relevant.
  * Rules:
  * - Group: message mentions bot + at least one other user
  * - DM: message mentions any user (no need to mention bot)
  */
-export function isMentionForwardRequest(event: FeishuMessageEvent, botOpenId?: string): boolean {
+export function shouldExposeMentionTargets(event: FeishuMessageEvent, botOpenId?: string): boolean {
   const mentions = event.message.mentions ?? [];
   if (mentions.length === 0) {
     return false;

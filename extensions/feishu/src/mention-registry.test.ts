@@ -78,10 +78,16 @@ describe("mention-registry", () => {
       );
     });
 
-    it("sender updates openId if different from existing mention", () => {
+    it("sender does not overwrite a mention's openId, even when different", () => {
+      // A mention is the authoritative name→openId source (Feishu resolves the
+      // @-target's open_id directly). A later sender with the same display name
+      // but a different open_id must not clobber it — names can collide across
+      // distinct users, and the explicitly @-mentioned one is the safer match.
       recordMention({ accountId: ACC, chatId: CHAT, name: "Alice", openId: "ou_old" });
       recordSender({ accountId: ACC, chatId: CHAT, name: "Alice", openId: "ou_new" });
-      expect(lookupMention({ accountId: ACC, chatId: CHAT, name: "Alice" })?.openId).toBe("ou_new");
+      const entry = lookupMention({ accountId: ACC, chatId: CHAT, name: "Alice" });
+      expect(entry?.openId).toBe("ou_old");
+      expect(entry?.source).toBe("mention");
     });
   });
 

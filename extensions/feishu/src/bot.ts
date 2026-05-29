@@ -47,7 +47,7 @@ import { finalizeFeishuMessageProcessing, tryRecordMessagePersistent } from "./d
 import { resolveFeishuMessageDedupeKey } from "./dedupe-key.js";
 import { maybeCreateDynamicAgent } from "./dynamic-agent.js";
 import { recordMention, recordSender } from "./mention-registry.js";
-import { extractMentionTargets, isMentionForwardRequest } from "./mention.js";
+import { extractMentionTargets, shouldExposeMentionTargets } from "./mention.js";
 import {
   hasExplicitFeishuGroupConfig,
   normalizeFeishuAllowEntry,
@@ -289,8 +289,9 @@ export function parseFeishuMessageEvent(
     contentType: event.message.message_type,
   };
 
-  // Detect mention forward request: message mentions bot + at least one other user
-  if (isMentionForwardRequest(event, botOpenId)) {
+  // Expose other-user mentions to the agent when the message addresses the bot
+  // and references other users, so it can @-mention them back with open_ids.
+  if (shouldExposeMentionTargets(event, botOpenId)) {
     const mentionTargets = extractMentionTargets(event, botOpenId);
     if (mentionTargets.length > 0) {
       ctx.mentionTargets = mentionTargets;
@@ -1611,7 +1612,6 @@ export async function handleFeishuMessage(params: {
             replyInThread,
             rootId: ctx.rootId,
             threadReply,
-            mentionTargets: undefined,
             accountId: account.accountId,
             identity,
             messageCreateTimeMs,
@@ -1777,7 +1777,6 @@ export async function handleFeishuMessage(params: {
         replyInThread,
         rootId: ctx.rootId,
         threadReply,
-        mentionTargets: undefined,
         accountId: account.accountId,
         identity,
         messageCreateTimeMs,
