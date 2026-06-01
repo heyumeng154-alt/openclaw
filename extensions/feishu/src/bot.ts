@@ -322,6 +322,7 @@ export function buildFeishuAgentBody(params: {
     | "content"
     | "senderName"
     | "senderOpenId"
+    | "senderType"
     | "mentionTargets"
     | "messageId"
     | "hasAnyMention"
@@ -363,10 +364,19 @@ export function buildFeishuAgentBody(params: {
       : `in your reply`;
     messageBody +=
       `\n\n[System: IMPORTANT — Feishu group @mention rule: ` +
-      `Posting a message to this group does NOT notify anyone. ` +
-      `Bots can ONLY see messages that explicitly @mention them. ` +
-      `Replying to or quoting someone does NOT count as @mentioning them. ` +
-      `If you need a bot or person to see your message, you MUST include <at user_id="OPEN_ID">Name</at> ${mentionHow}.]`;
+      `others receive your message only if you explicitly @mention them; ` +
+      `posting, replying, or quoting alone notifies no one. ` +
+      `To reach a bot or person, include <at user_id="OPEN_ID">Name</at> ${mentionHow}.]`;
+
+    // A bot sender only receives a reply that @mentions it. Its open_id is not
+    // surfaced anywhere else in this prompt, so without it the agent cannot
+    // build the tag and the bot-to-bot loop silently dies.
+    if (ctx.senderType === "bot" && ctx.senderOpenId) {
+      messageBody +=
+        `\n\n[System: ${formatMentionNameForAgentContext(ctx.senderName ?? "the sender")} ` +
+        `(open_id: ${ctx.senderOpenId}) is a bot and receives your reply only if you @mention it. ` +
+        `You MUST @mention it in your reply.]`;
+    }
   }
 
   if (ctx.mentionTargets && ctx.mentionTargets.length > 0) {
@@ -1071,6 +1081,15 @@ export async function handleFeishuMessage(params: {
             ...ctx,
             content: audioTranscript,
           };
+    // Bot-to-bot delivery guarantee: a bot sender only receives a group reply
+    // that @mentions it. The agent is prompted to do this but cannot be relied
+    // on, so the outbound layer injects the sender's mention when missing.
+    // Narrowly scoped to bot senders in groups — never human senders, which is
+    // the #71396 mention cascade this must not reintroduce.
+    const botSenderMentionTarget =
+      isGroup && ctx.senderType === "bot" && ctx.senderOpenId
+        ? { openId: ctx.senderOpenId, name: ctx.senderName }
+        : undefined;
     const effectiveCommandProbeBody =
       audioTranscript === undefined
         ? commandProbeBody
@@ -1613,6 +1632,7 @@ export async function handleFeishuMessage(params: {
             accountId: account.accountId,
             identity,
             messageCreateTimeMs,
+            ensureMentionTarget: botSenderMentionTarget,
           });
 
           log(
@@ -1778,6 +1798,7 @@ export async function handleFeishuMessage(params: {
         accountId: account.accountId,
         identity,
         messageCreateTimeMs,
+        ensureMentionTarget: botSenderMentionTarget,
       });
 
       log(`feishu[${account.accountId}]: dispatching to agent (session=${route.sessionKey})`);

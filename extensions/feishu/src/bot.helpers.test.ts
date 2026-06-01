@@ -70,6 +70,38 @@ describe("buildFeishuAgentBody", () => {
     expect(body).not.toContain("automatically @mention");
     expect(body).not.toContain("plain");
   });
+
+  it("tells the agent it MUST @mention a bot sender in a group", () => {
+    const body = buildFeishuAgentBody({
+      ctx: {
+        content: "在吗？",
+        senderName: "麦香鱼🦞",
+        senderOpenId: "ou-bot-sender",
+        senderType: "bot",
+        messageId: "msg-44",
+        chatType: "group",
+      },
+    });
+
+    expect(body).toContain(
+      '[System: "麦香鱼🦞" (open_id: ou-bot-sender) is a bot and receives your reply only if you @mention it. You MUST @mention it in your reply.]',
+    );
+  });
+
+  it("does not add the bot-sender mention instruction for a human sender", () => {
+    const body = buildFeishuAgentBody({
+      ctx: {
+        content: "在吗？",
+        senderName: "黄梦轩",
+        senderOpenId: "ou-human-sender",
+        senderType: "user",
+        messageId: "msg-45",
+        chatType: "group",
+      },
+    });
+
+    expect(body).not.toContain("You MUST @mention it in your reply.");
+  });
 });
 
 describe("toMessageResourceType", () => {

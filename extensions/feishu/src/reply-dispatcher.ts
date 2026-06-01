@@ -14,7 +14,7 @@ import { stripReasoningTagsFromText } from "openclaw/plugin-sdk/text-chunking";
 import { resolveFeishuRuntimeAccount } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
 import { sendMediaFeishu, shouldSuppressFeishuTextForVoiceMedia } from "./media.js";
-import { normalizeOutboundMentions } from "./outbound-mention.js";
+import { ensureMention, normalizeOutboundMentions } from "./outbound-mention.js";
 import {
   createReplyPrefixContext,
   type ClawdbotConfig,
@@ -129,6 +129,9 @@ type CreateFeishuReplyDispatcherParams = {
   /** Epoch ms when the inbound message was created. Used to suppress typing
    *  indicators on old/replayed messages after context compaction (#30418). */
   messageCreateTimeMs?: number;
+  /** When set, the outbound reply is guaranteed to @mention this entity (the
+   *  bot sender) so a bot-to-bot reply actually reaches it. See ensureMention. */
+  ensureMentionTarget?: { openId: string; name?: string };
 };
 
 export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherParams) {
@@ -144,6 +147,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     rootId,
     accountId,
     identity,
+    ensureMentionTarget,
   } = params;
   const sendReplyToMessageId = skipReplyToInMessages ? undefined : replyToMessageId;
   const threadReplyMode = threadReply === true;
@@ -403,7 +407,11 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
             `feishu[${account.accountId}]: L2 unresolved @mentions (streaming): [${l2Stream.failures.join(", ")}] in ${chatId}`,
           );
         }
-        const text = buildCombinedStreamText(reasoningText, l2Stream.text);
+        const ensuredStream =
+          ensureMentionTarget && l2Stream.text
+            ? ensureMention(l2Stream.text, ensureMentionTarget)
+            : l2Stream.text;
+        const text = buildCombinedStreamText(reasoningText, ensuredStream);
         const finalNote = resolveCardNote(agentId, identity, prefixContext.prefixContext);
         await streaming.close(text, { note: finalNote });
         // Track the raw streamed text so the duplicate-final check in deliver()
@@ -550,7 +558,12 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         const l2Result = rawText
           ? normalizeOutboundMentions({ text: rawText, accountId: account.accountId, chatId })
           : { text: rawText, failures: [] as string[] };
-        const text = l2Result.text;
+        // Inject the bot-sender mention on the real reply only — never on a
+        // reasoning preview or an empty/media-only payload.
+        const text =
+          ensureMentionTarget && rawText && !payload.isReasoning
+            ? ensureMention(l2Result.text, ensureMentionTarget)
+            : l2Result.text;
         if (rawText && text !== rawText) {
           params.runtime.log?.(
             `feishu[${account.accountId}]: L2 normalized outbound mentions in ${chatId}`,

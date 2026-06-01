@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeOutboundMentions } from "./outbound-mention.js";
+import { ensureMention, normalizeOutboundMentions } from "./outbound-mention.js";
 
 const ACC = "bot1";
 const CHAT = "oc_chat1";
@@ -155,5 +155,28 @@ describe("L2 outbound mention normalization", () => {
       const result = normalize("");
       expect(result.text).toBe("");
     });
+  });
+});
+
+describe("ensureMention", () => {
+  it("prepends the canonical tag when the sender is not mentioned", () => {
+    expect(ensureMention("好的，我准备好了", { openId: "ou_bot", name: "龙虾一号" })).toBe(
+      '<at user_id="ou_bot">龙虾一号</at> 好的，我准备好了',
+    );
+  });
+
+  it("is a no-op when the text already mentions that openId", () => {
+    const text = '<at user_id="ou_bot">龙虾一号</at> 好的';
+    expect(ensureMention(text, { openId: "ou_bot", name: "龙虾一号" })).toBe(text);
+  });
+
+  it("falls back to openId as display name when name is absent", () => {
+    expect(ensureMention("hi", { openId: "ou_bot" })).toBe('<at user_id="ou_bot">ou_bot</at> hi');
+  });
+
+  it("returns a bare tag for empty text", () => {
+    expect(ensureMention("", { openId: "ou_bot", name: "Bot" })).toBe(
+      '<at user_id="ou_bot">Bot</at>',
+    );
   });
 });

@@ -214,3 +214,19 @@ export function normalizeOutboundMentions(params: {
 
   return { text: result, failures };
 }
+
+/**
+ * Guarantee the reply @mentions a specific entity. Feishu delivers a group
+ * message to a bot only when it is @mentioned, so a bot-to-bot reply the model
+ * forgot to tag would silently never reach the sender. Prepend the canonical
+ * tag unless the (already-normalized) text mentions that openId. Caller scopes
+ * this to bot senders in groups — never human senders (that is the #71396
+ * mention cascade this must not reintroduce).
+ */
+export function ensureMention(text: string, target: { openId: string; name?: string }): string {
+  if (text.includes(`user_id="${target.openId}"`)) {
+    return text;
+  }
+  const tag = buildTag(target.openId, target.name);
+  return text ? `${tag} ${text}` : tag;
+}
