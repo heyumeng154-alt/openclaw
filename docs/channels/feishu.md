@@ -153,19 +153,11 @@ In `allowlist` mode, you can also admit a group by adding an explicit `groups.<c
 
 ### Bot-to-bot conversations
 
-By default, OpenClaw treats messages authored by other bots identically to human messages (subject to your existing `allowFrom` / `groupSenderAllowFrom` / `requireMention`). Tighten or disable per chat with `allowBots`:
+OpenClaw treats messages authored by other bots identically to human messages: they flow through the same `allowFrom` / `groupSenderAllowFrom` / `requireMention` gating as a human sender. There is no separate bot on/off switch — authorize or restrict peer bots with the same allowlists you use for people.
 
-| Value              | Behavior                                                                                                                                                    |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `true` _(default)_ | Accept bot-authored messages, still subject to `allowFrom` / `groupSenderAllowFrom` / `requireMention`.                                                     |
-| `false`            | Bot-authored messages are dropped before any allowlist check.                                                                                               |
-| `"mentions"`       | Accept bot-authored messages only when this bot is @-mentioned. Useful when `requireMention` is off but you still want bot-to-bot to be opt-in per message. |
+**Required Feishu scope**: receiving bot-mentioned-by-bot events requires `im:message.group_at_msg.include_bot:readonly`. Without it the platform will not deliver these events. Existing scopes (`im:message.group_at_msg`, `im:message.group_msg`, `im:message.p2p_msg`) do **not** include bot-authored messages. Feishu has no bot-to-bot p2p capability at the platform level, so this only applies in group chats.
 
-Resolution priority: group-level to account-level to channel-level to `true`.
-
-**Required Feishu scope**: receiving bot-mentioned-by-bot events requires `im:message.group_at_msg.include_bot:readonly`. Without it the platform will not deliver these events regardless of `allowBots`. Existing scopes (`im:message.group_at_msg`, `im:message.group_msg`, `im:message.p2p_msg`) do **not** include bot-authored messages. Feishu has no bot-to-bot p2p capability at the platform level, so this only applies in group chats.
-
-A built-in self-filter unconditionally drops messages where the sender's `open_id` matches this bot's own `open_id`, regardless of `allowBots`, to prevent webhook self-echo loops once the `include_bot` scope is granted. This is the floor for loop control; OpenClaw does not provide a per-chat rate limiter, so for chains of cooperating bots instruct each agent's system prompt to `<at>` peers only when it has a real reason to.
+A built-in self-filter unconditionally drops messages where the sender's `open_id` matches this bot's own `open_id`, to prevent webhook self-echo loops once the `include_bot` scope is granted. This is the floor for loop control; OpenClaw does not provide a per-chat rate limiter, so for chains of cooperating bots instruct each agent's system prompt to `<at>` peers only when it has a real reason to.
 
 Authorize peer bots through the existing `allowFrom` / `groupSenderAllowFrom` lists. Add the peer bot's `open_id` (visible from this app's perspective) just like a human user. There is no separate `peerBots` list.
 
@@ -173,15 +165,9 @@ Authorize peer bots through the existing `allowFrom` / `groupSenderAllowFrom` li
 {
   channels: {
     feishu: {
-      // Channel-level default; can be overridden per group.
-      allowBots: "mentions",
+      // Peer bots are authorized like human users — add their open_id
+      // (from this app's perspective) to the allowlist.
       groupSenderAllowFrom: ["ou_peer_bot"],
-      groups: {
-        oc_xxx: {
-          // Disable bot-to-bot only in this one group.
-          allowBots: false,
-        },
-      },
     },
   },
 }
@@ -588,40 +574,38 @@ ls -la ~/.openclaw/workspace-*
 
 Full configuration: [Gateway configuration](/gateway/configuration)
 
-| Setting                                                  | Description                                                                                                        | Default                              |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------ |
-| `channels.feishu.enabled`                                | Enable/disable the channel                                                                                         | `true`                               |
-| `channels.feishu.domain`                                 | API domain (`feishu` or `lark`)                                                                                    | `feishu`                             |
-| `channels.feishu.connectionMode`                         | Event transport (`websocket` or `webhook`)                                                                         | `websocket`                          |
-| `channels.feishu.defaultAccount`                         | Default account for outbound routing                                                                               | `default`                            |
-| `channels.feishu.verificationToken`                      | Required for webhook mode                                                                                          | -                                    |
-| `channels.feishu.encryptKey`                             | Required for webhook mode                                                                                          | -                                    |
-| `channels.feishu.webhookPath`                            | Webhook route path                                                                                                 | `/feishu/events`                     |
-| `channels.feishu.webhookHost`                            | Webhook bind host                                                                                                  | `127.0.0.1`                          |
-| `channels.feishu.webhookPort`                            | Webhook bind port                                                                                                  | `3000`                               |
-| `channels.feishu.accounts.<id>.appId`                    | App ID                                                                                                             | -                                    |
-| `channels.feishu.accounts.<id>.appSecret`                | App Secret                                                                                                         | -                                    |
-| `channels.feishu.accounts.<id>.domain`                   | Per-account domain override                                                                                        | `feishu`                             |
-| `channels.feishu.accounts.<id>.tts`                      | Per-account TTS override                                                                                           | `messages.tts`                       |
-| `channels.feishu.dmPolicy`                               | DM policy                                                                                                          | `allowlist`                          |
-| `channels.feishu.allowFrom`                              | DM allowlist (open_id list)                                                                                        | [BotOwnerId]                         |
-| `channels.feishu.groupPolicy`                            | Group policy                                                                                                       | `allowlist`                          |
-| `channels.feishu.groupAllowFrom`                         | Group allowlist                                                                                                    | -                                    |
-| `channels.feishu.requireMention`                         | Require @mention in groups                                                                                         | `true`                               |
-| `channels.feishu.allowBots`                              | Respond to other bots: `true`/`false`/`"mentions"` (requires `im:message.group_at_msg.include_bot:readonly` scope) | `true`                               |
-| `channels.feishu.groups.<chat_id>.requireMention`        | Per-group @mention override; explicit IDs also admit the group in allowlist mode                                   | inherited                            |
-| `channels.feishu.groups.<chat_id>.allowBots`             | Per-group `allowBots` override                                                                                     | inherited                            |
-| `channels.feishu.groups.<chat_id>.enabled`               | Enable/disable a specific group                                                                                    | `true`                               |
-| `channels.feishu.dynamicAgentCreation.enabled`           | Enable automatic per-user agent creation                                                                           | `false`                              |
-| `channels.feishu.dynamicAgentCreation.workspaceTemplate` | Path template for dynamic agent workspaces                                                                         | `~/.openclaw/workspace-{agentId}`    |
-| `channels.feishu.dynamicAgentCreation.agentDirTemplate`  | Agent directory name template                                                                                      | `~/.openclaw/agents/{agentId}/agent` |
-| `channels.feishu.dynamicAgentCreation.maxAgents`         | Maximum number of dynamic agents to create                                                                         | unlimited                            |
-| `channels.feishu.textChunkLimit`                         | Message chunk size                                                                                                 | `2000`                               |
-| `channels.feishu.mediaMaxMb`                             | Media size limit                                                                                                   | `30`                                 |
-| `channels.feishu.streaming`                              | Streaming card output                                                                                              | `true`                               |
-| `channels.feishu.blockStreaming`                         | Completed-block reply streaming                                                                                    | `false`                              |
-| `channels.feishu.typingIndicator`                        | Send typing reactions                                                                                              | `true`                               |
-| `channels.feishu.resolveSenderNames`                     | Resolve sender display names                                                                                       | `true`                               |
+| Setting                                                  | Description                                                                      | Default                              |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------ |
+| `channels.feishu.enabled`                                | Enable/disable the channel                                                       | `true`                               |
+| `channels.feishu.domain`                                 | API domain (`feishu` or `lark`)                                                  | `feishu`                             |
+| `channels.feishu.connectionMode`                         | Event transport (`websocket` or `webhook`)                                       | `websocket`                          |
+| `channels.feishu.defaultAccount`                         | Default account for outbound routing                                             | `default`                            |
+| `channels.feishu.verificationToken`                      | Required for webhook mode                                                        | -                                    |
+| `channels.feishu.encryptKey`                             | Required for webhook mode                                                        | -                                    |
+| `channels.feishu.webhookPath`                            | Webhook route path                                                               | `/feishu/events`                     |
+| `channels.feishu.webhookHost`                            | Webhook bind host                                                                | `127.0.0.1`                          |
+| `channels.feishu.webhookPort`                            | Webhook bind port                                                                | `3000`                               |
+| `channels.feishu.accounts.<id>.appId`                    | App ID                                                                           | -                                    |
+| `channels.feishu.accounts.<id>.appSecret`                | App Secret                                                                       | -                                    |
+| `channels.feishu.accounts.<id>.domain`                   | Per-account domain override                                                      | `feishu`                             |
+| `channels.feishu.accounts.<id>.tts`                      | Per-account TTS override                                                         | `messages.tts`                       |
+| `channels.feishu.dmPolicy`                               | DM policy                                                                        | `allowlist`                          |
+| `channels.feishu.allowFrom`                              | DM allowlist (open_id list)                                                      | [BotOwnerId]                         |
+| `channels.feishu.groupPolicy`                            | Group policy                                                                     | `allowlist`                          |
+| `channels.feishu.groupAllowFrom`                         | Group allowlist                                                                  | -                                    |
+| `channels.feishu.requireMention`                         | Require @mention in groups                                                       | `true`                               |
+| `channels.feishu.groups.<chat_id>.requireMention`        | Per-group @mention override; explicit IDs also admit the group in allowlist mode | inherited                            |
+| `channels.feishu.groups.<chat_id>.enabled`               | Enable/disable a specific group                                                  | `true`                               |
+| `channels.feishu.dynamicAgentCreation.enabled`           | Enable automatic per-user agent creation                                         | `false`                              |
+| `channels.feishu.dynamicAgentCreation.workspaceTemplate` | Path template for dynamic agent workspaces                                       | `~/.openclaw/workspace-{agentId}`    |
+| `channels.feishu.dynamicAgentCreation.agentDirTemplate`  | Agent directory name template                                                    | `~/.openclaw/agents/{agentId}/agent` |
+| `channels.feishu.dynamicAgentCreation.maxAgents`         | Maximum number of dynamic agents to create                                       | unlimited                            |
+| `channels.feishu.textChunkLimit`                         | Message chunk size                                                               | `2000`                               |
+| `channels.feishu.mediaMaxMb`                             | Media size limit                                                                 | `30`                                 |
+| `channels.feishu.streaming`                              | Streaming card output                                                            | `true`                               |
+| `channels.feishu.blockStreaming`                         | Completed-block reply streaming                                                  | `false`                              |
+| `channels.feishu.typingIndicator`                        | Send typing reactions                                                            | `true`                               |
+| `channels.feishu.resolveSenderNames`                     | Resolve sender display names                                                     | `true`                               |
 
 ---
 
