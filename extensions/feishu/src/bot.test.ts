@@ -3682,7 +3682,7 @@ describe("createFeishuMessageReceiveHandler media dedupe", () => {
   });
 });
 
-describe("handleFeishuMessage allowBots gating", () => {
+describe("handleFeishuMessage bot-authored message handling", () => {
   const BOT_OPEN_ID = "ou_self_bot";
   const PEER_BOT_OPEN_ID = "ou_peer_bot";
   const HUMAN_USER_OPEN_ID = "ou_human";
@@ -3820,7 +3820,7 @@ describe("handleFeishuMessage allowBots gating", () => {
     );
   });
 
-  it("admits bot-authored group messages by default (allowBots unset, treats as user)", async () => {
+  it("admits bot-authored group messages (treated like a user message)", async () => {
     await dispatchMessage({
       cfg: makeChannelCfg({}),
       botOpenId: BOT_OPEN_ID,
@@ -3828,30 +3828,15 @@ describe("handleFeishuMessage allowBots gating", () => {
         senderOpenId: PEER_BOT_OPEN_ID,
         senderType: "bot",
         mentionsBot: true,
-        messageId: "msg-default-admit",
+        messageId: "msg-bot-admit",
       }),
     });
     expect(mockFinalizeInboundContext).toHaveBeenCalledTimes(1);
   });
 
-  it("drops bot-authored group messages when allowBots=false is explicitly set", async () => {
-    await dispatchMessage({
-      cfg: makeChannelCfg({ allowBots: false }),
-      botOpenId: BOT_OPEN_ID,
-      event: makeBotMessageEvent({
-        senderOpenId: PEER_BOT_OPEN_ID,
-        senderType: "bot",
-        mentionsBot: true,
-        messageId: "msg-explicit-drop",
-      }),
-    });
-    expect(mockFinalizeInboundContext).not.toHaveBeenCalled();
-  });
-
-  it("admits bot-authored messages when allowBots=true and sender is in allowlist", async () => {
+  it("admits bot-authored messages when the sender is in the allowlist", async () => {
     await dispatchMessage({
       cfg: makeChannelCfg({
-        allowBots: true,
         groupSenderAllowFrom: [PEER_BOT_OPEN_ID],
       }),
       botOpenId: BOT_OPEN_ID,
@@ -3865,10 +3850,9 @@ describe("handleFeishuMessage allowBots gating", () => {
     expect(mockFinalizeInboundContext).toHaveBeenCalledTimes(1);
   });
 
-  it("drops bot-authored messages when allowBots=true but sender is not in allowlist", async () => {
+  it("drops bot-authored messages when the sender is not in the allowlist", async () => {
     await dispatchMessage({
       cfg: makeChannelCfg({
-        allowBots: true,
         groupSenderAllowFrom: ["ou_some_other_user"],
       }),
       botOpenId: BOT_OPEN_ID,
@@ -3882,38 +3866,9 @@ describe("handleFeishuMessage allowBots gating", () => {
     expect(mockFinalizeInboundContext).not.toHaveBeenCalled();
   });
 
-  it("drops bot-authored messages with allowBots='mentions' when bot is not @-mentioned", async () => {
-    await dispatchMessage({
-      cfg: makeChannelCfg({ allowBots: "mentions" }),
-      botOpenId: BOT_OPEN_ID,
-      event: makeBotMessageEvent({
-        senderOpenId: PEER_BOT_OPEN_ID,
-        senderType: "bot",
-        mentionsBot: false,
-        messageId: "msg-mentions-not-mentioned",
-      }),
-    });
-    expect(mockFinalizeInboundContext).not.toHaveBeenCalled();
-  });
-
-  it("admits bot-authored messages with allowBots='mentions' when bot is @-mentioned", async () => {
-    await dispatchMessage({
-      cfg: makeChannelCfg({ allowBots: "mentions" }),
-      botOpenId: BOT_OPEN_ID,
-      event: makeBotMessageEvent({
-        senderOpenId: PEER_BOT_OPEN_ID,
-        senderType: "bot",
-        mentionsBot: true,
-        messageId: "msg-mentions-mentioned",
-      }),
-    });
-    expect(mockFinalizeInboundContext).toHaveBeenCalledTimes(1);
-  });
-
-  it("drops self-authored messages even when allowBots=true (L1 self-filter)", async () => {
+  it("drops self-authored messages (L1 self-filter)", async () => {
     await dispatchMessage({
       cfg: makeChannelCfg({
-        allowBots: true,
         groupSenderAllowFrom: [BOT_OPEN_ID],
       }),
       botOpenId: BOT_OPEN_ID,
@@ -3927,30 +3882,9 @@ describe("handleFeishuMessage allowBots gating", () => {
     expect(mockFinalizeInboundContext).not.toHaveBeenCalled();
   });
 
-  it("group-level allowBots=false overrides channel-level allowBots=true", async () => {
+  it("admits a human sender in the allowlist", async () => {
     await dispatchMessage({
       cfg: makeChannelCfg({
-        allowBots: true,
-        groupSenderAllowFrom: [PEER_BOT_OPEN_ID],
-        groups: {
-          oc_group_chat: { allowBots: false },
-        },
-      }),
-      botOpenId: BOT_OPEN_ID,
-      event: makeBotMessageEvent({
-        senderOpenId: PEER_BOT_OPEN_ID,
-        senderType: "bot",
-        mentionsBot: true,
-        messageId: "msg-group-override",
-      }),
-    });
-    expect(mockFinalizeInboundContext).not.toHaveBeenCalled();
-  });
-
-  it("does not engage allowBots gating when sender is a human user", async () => {
-    await dispatchMessage({
-      cfg: makeChannelCfg({
-        allowBots: false,
         groupSenderAllowFrom: [HUMAN_USER_OPEN_ID],
       }),
       botOpenId: BOT_OPEN_ID,

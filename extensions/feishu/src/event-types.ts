@@ -8,8 +8,8 @@ export type FeishuMessageEvent = {
     /**
      * sender_type from `im.message.receive_v1` webhook events.
      * NOTE: Distinct from the `im.v1.message.get` API response which returns
-     * `"app"` instead of `"bot"`. Do not conflate the two — downstream filters
-     * (e.g. self-filter, allowBots gating) depend on this literal.
+     * `"app"` instead of `"bot"`. Do not conflate the two — downstream logic
+     * (e.g. the self-filter and bot sender-name resolution) depends on this literal.
      */
     sender_type?: "user" | "bot";
     tenant_key?: string;

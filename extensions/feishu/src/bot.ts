@@ -52,7 +52,6 @@ import { extractMentionTargets, shouldExposeMentionTargets } from "./mention.js"
 import {
   hasExplicitFeishuGroupConfig,
   normalizeFeishuAllowEntry,
-  resolveFeishuAllowBots,
   resolveFeishuDmIngressAccess,
   resolveFeishuGroupConfig,
   resolveFeishuGroupConversationIngressAccess,
@@ -548,9 +547,9 @@ export async function handleFeishuMessage(params: {
 
   // Resolve sender display name (best-effort) so the agent can attribute messages correctly.
   // Optimization: skip if disabled to save API quota (Feishu free tier limit).
-  // Bot-authored senders are deferred to after the allowBots gate (see below); the
-  // contact API path here is known-incompatible with bot open_ids and would only
-  // burn a guaranteed-fail call for messages that may then be dropped anyway.
+  // Bot-authored senders are resolved later via the bot-only OpenAPI (see below);
+  // the contact API path here is known-incompatible with bot open_ids and would
+  // only burn a guaranteed-fail call.
   let permissionErrorForAgent: FeishuPermissionError | undefined;
   if ((feishuCfg?.resolveSenderNames ?? true) && ctx.senderType !== "bot") {
     const senderResult = await resolveFeishuSenderName({
@@ -626,30 +625,14 @@ export async function handleFeishuMessage(params: {
     return;
   }
 
-  // Layer 2 — other-bot gating (config-driven). Only engages when the inbound
-  // sender_type is "bot"; user senders fall through to the existing pipeline.
+  // Bot-authored senders flow through the same pipeline as users (still subject
+  // to the existing allowFrom / requireMention gating); the only bot-specific
+  // step is resolving a display name. Self-loop safety is the Layer 1 self-filter
+  // above. Receiving these events at all requires the Feishu app scope
+  // `im:message.group_at_msg.include_bot:readonly`.
   if (ctx.senderType === "bot") {
-    const allowBots = resolveFeishuAllowBots({
-      groupConfig,
-      accountConfig: feishuCfg,
-      channelConfig: cfg.channels?.feishu,
-    });
-    if (allowBots === false) {
-      log(
-        `feishu[${account.accountId}]: dropping bot-authored message ${ctx.messageId} (allowBots=false)`,
-      );
-      return;
-    }
-    if (allowBots === "mentions" && !ctx.mentionedBot) {
-      log(
-        `feishu[${account.accountId}]: dropping bot-authored message ${ctx.messageId} (allowBots=mentions, not @-mentioned)`,
-      );
-      return;
-    }
     log(
-      `feishu[${account.accountId}]: admitting bot-authored message ${ctx.messageId} (allowBots=${String(
-        allowBots,
-      )}, mentionedBot=${ctx.mentionedBot})`,
+      `feishu[${account.accountId}]: bot-authored message ${ctx.messageId} (mentionedBot=${ctx.mentionedBot})`,
     );
 
     // Resolve bot sender display name via the bot-only OpenAPI. Weak dependency:
