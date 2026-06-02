@@ -32,6 +32,7 @@ import {
   parseMessageContent,
   resolveFeishuGroupSession,
   resolveFeishuMediaList,
+  resolveFeishuReplyRouting,
 } from "./bot-content.js";
 import { enrichMentionBotNames, resolveFeishuBotName } from "./bot-name.js";
 import {
@@ -896,7 +897,6 @@ export async function handleFeishuMessage(params: {
     const feishuTo = isGroup ? `chat:${ctx.chatId}` : `user:${ctx.senderOpenId}`;
     const peerId = isGroup ? (groupSession?.peerId ?? ctx.chatId) : ctx.senderOpenId;
     const parentPeer = isGroup ? (groupSession?.parentPeer ?? null) : null;
-    const replyInThread = isGroup ? (groupSession?.replyInThread ?? false) : false;
     const feishuAcpConversationSupported =
       !isGroup ||
       groupSession?.groupSessionScope === "group_topic" ||
@@ -1495,13 +1495,19 @@ export async function handleFeishuMessage(params: {
     const configReplyInThread =
       isGroup &&
       (groupConfig?.replyInThread ?? feishuCfg?.replyInThread ?? "disabled") === "enabled";
-    const replyTargetMessageId =
-      isTopicSession || configReplyInThread
-        ? (ctx.rootId ??
-          ctx.replyTargetMessageId ??
-          (ctx.suppressReplyTarget ? undefined : ctx.messageId))
-        : (ctx.replyTargetMessageId ?? (ctx.suppressReplyTarget ? undefined : ctx.messageId));
-    const threadReply = isGroup ? (groupSession?.threadReply ?? false) : false;
+    const { replyTargetMessageId, dispatchRootId, dispatchReplyInThread, threadReply } =
+      resolveFeishuReplyRouting({
+        isGroup,
+        senderType: ctx.senderType,
+        isTopicSession,
+        configReplyInThread,
+        messageId: ctx.messageId,
+        rootId: ctx.rootId,
+        replyTargetMessageId: ctx.replyTargetMessageId,
+        suppressReplyTarget: ctx.suppressReplyTarget,
+        groupThreadReply: groupSession?.threadReply ?? false,
+        groupReplyInThread: groupSession?.replyInThread ?? false,
+      });
     const lastRouteThreadId =
       isGroup && (isTopicSession || configReplyInThread || threadReply)
         ? replyTargetMessageId
@@ -1626,8 +1632,8 @@ export async function handleFeishuMessage(params: {
             allowReasoningPreview,
             replyToMessageId: replyTargetMessageId,
             skipReplyToInMessages: !isGroup,
-            replyInThread,
-            rootId: ctx.rootId,
+            replyInThread: dispatchReplyInThread,
+            rootId: dispatchRootId,
             threadReply,
             accountId: account.accountId,
             identity,
@@ -1792,8 +1798,8 @@ export async function handleFeishuMessage(params: {
         allowReasoningPreview,
         replyToMessageId: replyTargetMessageId,
         skipReplyToInMessages: !isGroup,
-        replyInThread,
-        rootId: ctx.rootId,
+        replyInThread: dispatchReplyInThread,
+        rootId: dispatchRootId,
         threadReply,
         accountId: account.accountId,
         identity,
