@@ -381,13 +381,10 @@ export function buildFeishuAgentBody(params: {
   }
 
   if (ctx.mentionTargets && ctx.mentionTargets.length > 0) {
-    const list = ctx.mentionTargets
-      .map((t) => `${formatMentionNameForAgentContext(t.name)} (open_id: ${t.openId})`)
+    const targetNames = ctx.mentionTargets
+      .map((t) => formatMentionNameForAgentContext(t.name))
       .join(", ");
-    messageBody +=
-      `\n\n[System: This message @mentions the following users: ${list}. ` +
-      `Use these open_ids when performing actions involving these users. ` +
-      `To @mention in a reply, use <at user_id="OPEN_ID">Name</at>.]`;
+    messageBody += `\n\n[System: Feishu users mentioned in the incoming message, for context only: ${targetNames}. Do not notify or mention these users solely because they are listed here.]`;
   }
 
   // Keep message_id on its own line so shared message-id hint stripping can parse it reliably.

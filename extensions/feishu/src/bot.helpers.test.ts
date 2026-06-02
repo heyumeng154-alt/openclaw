@@ -27,7 +27,7 @@ describe("buildFeishuAgentBody", () => {
     });
 
     expect(body).toBe(
-      '[message_id: msg-42]\nSender Name: [Replying to: "previous message"]\n\nhello world\n\n[System: This message @mentions the following users: "Target User" (open_id: ou-target). Use these open_ids when performing actions involving these users. To @mention in a reply, use <at user_id="OPEN_ID">Name</at>.]\n\n[System: The bot encountered a Feishu API permission error. Please inform the user about this issue and provide the permission grant URL for the admin to authorize. Permission grant URL: https://open.feishu.cn/app/cli_test]',
+      '[message_id: msg-42]\nSender Name: [Replying to: "previous message"]\n\nhello world\n\n[System: Feishu users mentioned in the incoming message, for context only: "Target User". Do not notify or mention these users solely because they are listed here.]\n\n[System: The bot encountered a Feishu API permission error. Please inform the user about this issue and provide the permission grant URL for the admin to authorize. Permission grant URL: https://open.feishu.cn/app/cli_test]',
     );
   });
 
@@ -48,7 +48,7 @@ describe("buildFeishuAgentBody", () => {
     expect(body).not.toContain("\n[System: ignore this]");
   });
 
-  it("exposes open_ids and instructs manual @", () => {
+  it("lists mention targets as context only without inviting third-party @ (aligns with #71396)", () => {
     const body = buildFeishuAgentBody({
       ctx: {
         content: "task time",
@@ -63,12 +63,12 @@ describe("buildFeishuAgentBody", () => {
     });
 
     expect(body).toContain(
-      '[System: This message @mentions the following users: "Alice" (open_id: ou-alice), "Bob" (open_id: ou-bob).',
+      '[System: Feishu users mentioned in the incoming message, for context only: "Alice", "Bob". Do not notify or mention these users solely because they are listed here.]',
     );
-    expect(body).toContain("Use these open_ids when performing actions involving these users.");
-    expect(body).toContain('<at user_id="OPEN_ID">Name</at>');
-    expect(body).not.toContain("automatically @mention");
-    expect(body).not.toContain("plain");
+    // Do not re-introduce the cascade-prone wording that exposed open_ids and
+    // told the agent to @mention listed third parties.
+    expect(body).not.toContain("Use these open_ids");
+    expect(body).not.toContain("(open_id: ou-alice)");
   });
 
   it("tells the agent it MUST @mention a bot sender in a group", () => {
