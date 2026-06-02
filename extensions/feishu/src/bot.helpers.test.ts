@@ -102,6 +102,28 @@ describe("buildFeishuAgentBody", () => {
 
     expect(body).not.toContain("You MUST @mention it in your reply.");
   });
+
+  it("states the @mention rule without re-deriving the send mechanism (core owns that)", () => {
+    const body = buildFeishuAgentBody({
+      ctx: {
+        content: "hi",
+        senderName: "黄梦轩",
+        senderOpenId: "ou-human-sender",
+        senderType: "user",
+        messageId: "msg-46",
+        chatType: "group",
+      },
+    });
+
+    expect(body).toContain(
+      'Whenever you want a bot or person to see your message, you MUST include <at user_id="OPEN_ID">Name</at> in it.',
+    );
+    // The Feishu hint must not duplicate the core group-chat context's
+    // delivery-mode guidance (auto reply vs message tool); that is the single
+    // source of truth and re-deriving it here can drift.
+    expect(body).not.toContain("message(action=send)");
+    expect(body).not.toContain("in your reply text");
+  });
 });
 
 describe("toMessageResourceType", () => {

@@ -331,11 +331,8 @@ export function buildFeishuAgentBody(params: {
   quotedContent?: string;
   permissionErrorForAgent?: FeishuPermissionError;
   botOpenId?: string;
-  /** When true, agent uses message(action=send) to post; when false, agent replies directly. */
-  messageToolOnly?: boolean;
 }): string {
   const { ctx, quotedContent, permissionErrorForAgent, botOpenId } = params;
-  const messageToolOnly = params.messageToolOnly ?? false;
   let messageBody = ctx.content;
   if (quotedContent) {
     messageBody = `[Replying to: "${quotedContent}"]\n\n${ctx.content}`;
@@ -358,15 +355,16 @@ export function buildFeishuAgentBody(params: {
   // L0 guidance: in group chats, bots only receive messages that explicitly @ them.
   // Teach the agent the canonical <at> syntax; L2 outbound normalizer also catches
   // plain @Name as a fallback, but the prompt should not advertise that form.
+  // This states only the Feishu platform fact (mention-or-no-delivery); how to
+  // send (auto reply vs message tool) is owned by the core group-chat context,
+  // so we do not re-derive the delivery mode here.
   if (isFeishuGroupChatType(ctx.chatType)) {
-    const mentionHow = messageToolOnly
-      ? `in the message parameter when using message(action=send)`
-      : `in your reply`;
     messageBody +=
       `\n\n[System: IMPORTANT — Feishu group @mention rule: ` +
-      `others receive your message only if you explicitly @mention them; ` +
+      `a group message notifies someone only if it explicitly @mentions them — ` +
       `posting, replying, or quoting alone notifies no one. ` +
-      `To reach a bot or person, include <at user_id="OPEN_ID">Name</at> ${mentionHow}.]`;
+      `Whenever you want a bot or person to see your message, you MUST include ` +
+      `<at user_id="OPEN_ID">Name</at> in it.]`;
 
     // A bot sender only receives a reply that @mentions it. Its open_id is not
     // surfaced anywhere else in this prompt, so without it the agent cannot
@@ -1157,16 +1155,11 @@ export async function handleFeishuMessage(params: {
         groupSession?.groupSessionScope === "group_topic_sender");
 
     const envelopeOptions = core.channel.reply.resolveEnvelopeFormatOptions(cfg);
-    // Group chats default to message_tool_only unless configured otherwise.
-    const groupVisibleReplies =
-      isGroup &&
-      (cfg.messages?.groupChat?.visibleReplies ?? cfg.messages?.visibleReplies) === "automatic";
     const messageBody = buildFeishuAgentBody({
       ctx: agentFacingCtx,
       quotedContent,
       permissionErrorForAgent,
       botOpenId,
-      messageToolOnly: isGroup && !groupVisibleReplies,
     });
     const envelopeFrom = isGroup ? `${ctx.chatId}:${ctx.senderOpenId}` : ctx.senderOpenId;
     if (permissionErrorForAgent) {
