@@ -32,8 +32,59 @@ describe("check-database-first-legacy-stores", () => {
     }
   });
 
+  it("skips generated extension asset and dist bundles", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-db-first-guard-"));
+    try {
+      await fs.mkdir(path.join(root, "extensions", "diffs", "assets"), { recursive: true });
+      await fs.mkdir(path.join(root, "extensions", "diffs", "dist", "assets"), {
+        recursive: true,
+      });
+      await fs.mkdir(path.join(root, "extensions", "diffs", "src"), { recursive: true });
+      await fs.mkdir(path.join(root, "packages", "plugin-sdk", "dist"), { recursive: true });
+      await fs.mkdir(path.join(root, "packages", "plugin-sdk", "src"), { recursive: true });
+      await fs.writeFile(
+        path.join(root, "extensions", "diffs", "assets", "viewer-runtime.js"),
+        "export const bundled = true;\n",
+      );
+      await fs.writeFile(
+        path.join(root, "extensions", "diffs", "dist", "assets", "viewer-runtime.js"),
+        "export const bundled = true;\n",
+      );
+      await fs.writeFile(
+        path.join(root, "extensions", "diffs", "src", "runtime.js"),
+        "export const runtime = true;\n",
+      );
+      await fs.writeFile(
+        path.join(root, "packages", "plugin-sdk", "dist", "index.js"),
+        "export const bundled = true;\n",
+      );
+      await fs.writeFile(
+        path.join(root, "packages", "plugin-sdk", "src", "index.js"),
+        "export const runtime = true;\n",
+      );
+
+      const files = await collectDatabaseFirstLegacyStoreSourceFiles([
+        path.join(root, "extensions"),
+        path.join(root, "packages"),
+      ]);
+      const relativeFiles = files
+        .map((file) => path.relative(root, file).replaceAll(path.sep, "/"))
+        .toSorted();
+
+      expect(relativeFiles).toEqual([
+        "extensions/diffs/src/runtime.js",
+        "packages/plugin-sdk/src/index.js",
+      ]);
+    } finally {
+      await fs.rm(root, { force: true, recursive: true });
+    }
+  });
+
   it("ignores deeply nested type-only syntax", () => {
-    const nestedType = Array.from({ length: 600 }).reduce((type) => `Readonly<${type}>`, "string");
+    const nestedType = Array.from({ length: 600 }).reduce<string>(
+      (type) => `Readonly<${type}>`,
+      "string",
+    );
     const violations = collectDatabaseFirstLegacyStoreViolations(
       `
         type DeepRuntimeSchema = ${nestedType};
@@ -75,6 +126,42 @@ describe("check-database-first-legacy-stores", () => {
     );
 
     expect(violations).toEqual([{ kind: "legacy store filesystem write", line: 5 }]);
+  });
+
+  it("flags retired Diffs viewer sidecar writes", () => {
+    const violations = collectDatabaseFirstLegacyStoreViolations(
+      `
+        import { promises as fs } from "node:fs";
+        import path from "node:path";
+        await fs.writeFile(path.join(root, id, "viewer.html"), html);
+        await fs.writeFile(path.join(root, id, "meta.json"), metadata);
+        await fs.writeFile(path.join(root, id, "file-meta.json"), metadata);
+      `,
+      "extensions/diffs/src/legacy-store.ts",
+    );
+
+    expect(violations).toEqual([
+      { kind: "legacy store filesystem write", line: 4 },
+      { kind: "legacy store filesystem write", line: 5 },
+      { kind: "legacy store filesystem write", line: 6 },
+    ]);
+  });
+
+  it("flags retired QMD file-lock sidecars", () => {
+    const violations = collectDatabaseFirstLegacyStoreViolations(
+      `
+        import { withFileLock } from "openclaw/plugin-sdk/file-lock";
+        import path from "node:path";
+        await withFileLock(path.join(stateDir, "qmd", "embed.lock"), options, task);
+        await withFileLock(path.join(agentDir, "qmd-write.lock"), options, task);
+      `,
+      "extensions/memory-core/src/memory/qmd-locks.ts",
+    );
+
+    expect(violations).toEqual([
+      { kind: "legacy store filesystem write", line: 4 },
+      { kind: "legacy store filesystem write", line: 5 },
+    ]);
   });
 
   it("flags writes through local variables initialized from legacy store paths", () => {
@@ -121,6 +208,165 @@ describe("check-database-first-legacy-stores", () => {
     expect(violations).toEqual([
       { kind: "legacy store filesystem write", line: 4 },
       { kind: "legacy store filesystem write", line: 6 },
+    ]);
+  });
+
+  it("flags runtime writes to the retired TUI last-session store", () => {
+    const violations = collectDatabaseFirstLegacyStoreViolations(
+      `
+        import { promises as fs } from "node:fs";
+        import path from "node:path";
+        await fs.writeFile(path.join(stateDir, "tui", "last-session.json"), "{}\\n");
+      `,
+      "src/tui/last-session-writer.ts",
+    );
+
+    expect(violations).toEqual([{ kind: "legacy store filesystem write", line: 4 }]);
+  });
+
+  it("flags runtime writes to the retired commitments JSON store", () => {
+    const violations = collectDatabaseFirstLegacyStoreViolations(
+      `
+        import { promises as fs } from "node:fs";
+        import path from "node:path";
+        await fs.writeFile(path.join(stateDir, "commitments", "commitments.json"), "{}\\n");
+      `,
+      "src/commitments/file-store.ts",
+    );
+
+    expect(violations).toEqual([{ kind: "legacy store filesystem write", line: 4 }]);
+  });
+
+  it("flags runtime writes to retired managed-image record JSON", () => {
+    const violations = collectDatabaseFirstLegacyStoreViolations(
+      `
+        import { promises as fs } from "node:fs";
+        import path from "node:path";
+        await fs.writeFile(path.join(stateDir, "media", "outgoing", "records", \`\${id}.json\`), "{}\n");
+      `,
+      "src/gateway/managed-image-file-store.ts",
+    );
+
+    expect(violations).toEqual([{ kind: "legacy store filesystem write", line: 4 }]);
+  });
+
+  it("flags runtime writes to retired Web Push JSON stores", () => {
+    const violations = collectDatabaseFirstLegacyStoreViolations(
+      `
+        import { promises as fs } from "node:fs";
+        import path from "node:path";
+        await fs.writeFile(path.join(stateDir, "push", "web-push-subscriptions.json"), "{}\n");
+        await fs.writeFile(path.join(stateDir, "push", "vapid-keys.json"), "{}\n");
+      `,
+      "src/infra/push-web-file-store.ts",
+    );
+
+    expect(violations).toEqual([
+      { kind: "legacy store filesystem write", line: 4 },
+      { kind: "legacy store filesystem write", line: 6 },
+    ]);
+  });
+
+  it("flags runtime writes to the retired APNs registration store", () => {
+    const violations = collectDatabaseFirstLegacyStoreViolations(
+      `
+        import { promises as fs } from "node:fs";
+        import path from "node:path";
+        await fs.writeFile(path.join(stateDir, "push", "apns-registrations.json"), "{}\n");
+      `,
+      "src/infra/push-apns-file-store.ts",
+    );
+
+    expect(violations).toEqual([{ kind: "legacy store filesystem write", line: 4 }]);
+  });
+
+  it("flags runtime writes to the retired node-host JSON config", () => {
+    const violations = collectDatabaseFirstLegacyStoreViolations(
+      `
+        import { promises as fs } from "node:fs";
+        import path from "node:path";
+        await fs.writeFile(path.join(stateDir, "node.json"), "{}\n");
+      `,
+      "src/node-host/config-file-store.ts",
+    );
+
+    expect(violations).toEqual([{ kind: "legacy store filesystem write", line: 4 }]);
+  });
+
+  it("flags runtime writes to retired workspace setup and attestation sidecars", () => {
+    const violations = collectDatabaseFirstLegacyStoreViolations(
+      `
+        import { promises as fs } from "node:fs";
+        import path from "node:path";
+        await fs.writeFile(path.join(workspaceDir, "openclaw-workspace-state.json"), "{}\\n");
+        await fs.writeFile(path.join(workspaceDir, ".openclaw", "workspace-state.json"), "{}\\n");
+        await fs.writeFile(path.join(stateDir, "workspace-attestations", \`\${workspaceKey}.attested\`), "ok\\n");
+        await fs.writeFile(\`\${workspaceDir}.attested\`, "ok\\n");
+      `,
+      "src/agents/workspace-sidecar-store.ts",
+    );
+
+    expect(violations).toEqual([
+      { kind: "legacy store filesystem write", line: 4 },
+      { kind: "legacy store filesystem write", line: 5 },
+      { kind: "legacy store filesystem write", line: 6 },
+      { kind: "legacy store filesystem write", line: 7 },
+    ]);
+  });
+
+  it("flags runtime writes to the retired native hook relay JSON registry", () => {
+    const violations = collectDatabaseFirstLegacyStoreViolations(
+      `
+        import { promises as fs } from "node:fs";
+        import path from "node:path";
+        await fs.writeFile(path.join("/tmp", "openclaw-native-hook-relays-501", "relay.json"), "{}\n");
+      `,
+      "src/agents/harness/native-hook-relay-file-store.ts",
+    );
+
+    expect(violations).toEqual([{ kind: "legacy store filesystem write", line: 4 }]);
+  });
+
+  it("flags runtime writes to the retired subagent JSON registry", () => {
+    const violations = collectDatabaseFirstLegacyStoreViolations(
+      `
+        import { promises as fs } from "node:fs";
+        import path from "node:path";
+        await fs.writeFile(path.join(stateDir, "subagents", "runs.json"), "{}\n");
+      `,
+      "src/agents/subagent-registry-file-store.ts",
+    );
+
+    expect(violations).toEqual([{ kind: "legacy store filesystem write", line: 4 }]);
+  });
+
+  it("flags runtime writes to retired skill-upload staging", () => {
+    const violations = collectDatabaseFirstLegacyStoreViolations(
+      `
+        import { promises as fs } from "node:fs";
+        import path from "node:path";
+        await fs.writeFile(path.join(stateDir, "tmp", "skill-uploads", uploadId, "metadata.json"), "{}\n");
+      `,
+      "src/skills/lifecycle/upload-file-store.ts",
+    );
+
+    expect(violations).toEqual([{ kind: "legacy store filesystem write", line: 4 }]);
+  });
+
+  it("flags runtime writes to retired system-agent rescue approval stores", () => {
+    const violations = collectDatabaseFirstLegacyStoreViolations(
+      `
+        import { promises as fs } from "node:fs";
+        import path from "node:path";
+        await fs.writeFile(path.join(stateDir, "openclaw", "rescue-pending", \`\${key}.json\`), "{}\\n");
+        await fs.writeFile(path.join(stateDir, "crestodian", "rescue-pending", "old.json"), "{}\\n");
+      `,
+      "src/system-agent/rescue-writer.ts",
+    );
+
+    expect(violations).toEqual([
+      { kind: "legacy store filesystem write", line: 4 },
+      { kind: "legacy store filesystem write", line: 5 },
     ]);
   });
 
@@ -8321,7 +8567,7 @@ describe("check-database-first-legacy-stores", () => {
         import fs from "node:fs";
         fs.writeFileSync("sessions.json", "{}\\n");
       `,
-      "extensions/matrix/src/matrix/client/storage.ts",
+      "extensions/memory-wiki/src/compile.ts",
     );
 
     expect(violations).toEqual([{ kind: "legacy store filesystem write", line: 3 }]);
@@ -8331,74 +8577,49 @@ describe("check-database-first-legacy-stores", () => {
     const content = `import fs from "node:fs";${"\n".repeat(667)}fs.writeFileSync("sessions.json", "{}\\n");`;
     const violations = collectDatabaseFirstLegacyStoreViolations(
       content,
-      "extensions/matrix/src/matrix/client/storage.ts",
+      "extensions/memory-wiki/src/compile.ts",
     );
 
     expect(violations).toEqual([{ kind: "legacy store filesystem write", line: 668 }]);
   });
 
   it("allows current legacy-debt writes after harmless line movement", () => {
-    const content = `
-      import path from "node:path";
-      import { writeJson } from "../infra/json-files.js";
-      const STORAGE_META_FILENAME = "storage-meta.json";
-      function writeStoredRootMetadata(filePath: string, metadata: unknown) {
-        return writeJson(filePath, metadata);
-      }
-      ${"\n".repeat(8)}
-      writeStoredRootMetadata(path.join(params.rootDir, STORAGE_META_FILENAME), {
-        homeserver: metadata.homeserver,
-        userId: metadata.userId,
-        accountId: metadata.accountId ?? DEFAULT_ACCOUNT_KEY,
-        accessTokenHash: metadata.accessTokenHash,
-        deviceId: metadata.deviceId ?? null,
-        currentTokenStateClaimed: true,
-        createdAt: metadata.createdAt ?? new Date().toISOString(),
-      });
-    `;
+    const content = [
+      `import { fsRoot } from "@openclaw/fs-safe/root";`,
+      `const relativePath = ".openclaw-wiki/cache/claims.jsonl";`,
+      `const root = await fsRoot(rootDir);`,
+      ...Array.from({ length: 8 }, () => ""),
+      `await root.write(relativePath, content);`,
+    ].join("\n");
     const violations = collectDatabaseFirstLegacyStoreViolations(
       content,
-      "extensions/matrix/src/matrix/client/storage.ts",
+      "extensions/memory-wiki/src/compile.ts",
     );
 
     expect(violations).toEqual([]);
   });
 
   it("flags duplicate copies of current legacy-debt writes", () => {
-    const allowedWrite = `
-      writeStoredRootMetadata(path.join(params.rootDir, STORAGE_META_FILENAME), {
-        homeserver: metadata.homeserver,
-        userId: metadata.userId,
-        accountId: metadata.accountId ?? DEFAULT_ACCOUNT_KEY,
-        accessTokenHash: metadata.accessTokenHash,
-        deviceId: metadata.deviceId ?? null,
-        currentTokenStateClaimed: true,
-        createdAt: metadata.createdAt ?? new Date().toISOString(),
-      });
-    `;
+    const relativePath = "extensions/memory-wiki/src/compile.ts";
+    const allowedWrite = `fs.writeFileSync("sessions.json", "{}\\n")`;
+    const currentLegacyWriteAllowances = new Map([
+      [`${relativePath}:legacy store filesystem write:${allowedWrite}`, 1],
+    ]);
     const violations = collectDatabaseFirstLegacyStoreViolations(
-      `
-        import path from "node:path";
-        import { writeJson } from "../infra/json-files.js";
-        const STORAGE_META_FILENAME = "storage-meta.json";
-        function writeStoredRootMetadata(filePath: string, metadata: unknown) {
-          return writeJson(filePath, metadata);
-        }
-        ${allowedWrite}
-        ${allowedWrite}
-      `,
-      "extensions/matrix/src/matrix/client/storage.ts",
+      [`import fs from "node:fs";`, `${allowedWrite};`, `${allowedWrite};`].join("\n"),
+      relativePath,
+      { currentLegacyWriteAllowances },
     );
 
-    expect(violations).toEqual([{ kind: "legacy store filesystem write", line: 20 }]);
+    expect(violations).toEqual([{ kind: "legacy store filesystem write", line: 3 }]);
   });
 
   it("flags stale current legacy-debt allowlist entries during full scans", () => {
     const violations = collectDatabaseFirstLegacyStoreViolations(
       `
-        export const STORAGE_META_FILENAME = "storage-meta.json";
+        export const CLAIMS_DIGEST_PATH = ".openclaw-wiki/cache/claims.jsonl";
       `,
-      "extensions/matrix/src/matrix/client/storage.ts",
+      "extensions/memory-wiki/src/compile.ts",
       { enforceCurrentLegacyAllowlist: true },
     );
 
@@ -8413,6 +8634,19 @@ describe("check-database-first-legacy-stores", () => {
         await fs.writeFile("sessions.json", "{}\\n", "utf8");
       `,
       "src/commands/doctor/cron/legacy-store-migration.ts",
+    );
+
+    expect(violations).toEqual([]);
+  });
+
+  it("allows the workspace Doctor migration owner to claim legacy sidecars", () => {
+    const violations = collectDatabaseFirstLegacyStoreViolations(
+      `
+        import { promises as fs } from "node:fs";
+        await fs.rename("openclaw-workspace-state.json", "openclaw-workspace-state.json.doctor-importing");
+        await fs.rename("workspace.attested", "workspace.attested.doctor-importing");
+      `,
+      "src/infra/state-migrations.workspace-setup.ts",
     );
 
     expect(violations).toEqual([]);

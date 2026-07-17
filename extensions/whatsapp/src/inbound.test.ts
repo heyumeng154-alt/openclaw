@@ -6,6 +6,7 @@ import {
   extractMediaPlaceholder,
   extractText,
 } from "./inbound.js";
+import { extractExternalAdReplyContext } from "./inbound/extract.js";
 
 describe("web inbound helpers", () => {
   it("prefers the main conversation body", () => {
@@ -245,6 +246,46 @@ describe("web inbound helpers", () => {
         audioMessage: {},
       } as unknown as import("baileys").proto.IMessage),
     ).toBe("<media:audio>");
+  });
+
+  it("distinguishes GIFs from videos using gifPlayback flag", () => {
+    expect(
+      extractMediaPlaceholder({
+        videoMessage: { gifPlayback: true },
+      } as unknown as import("baileys").proto.IMessage),
+    ).toBe("<media:gif>");
+    expect(
+      extractMediaPlaceholder({
+        videoMessage: { gifPlayback: false },
+      } as unknown as import("baileys").proto.IMessage),
+    ).toBe("<media:video>");
+    expect(
+      extractMediaPlaceholder({
+        videoMessage: {},
+      } as unknown as import("baileys").proto.IMessage),
+    ).toBe("<media:video>");
+  });
+
+  it("keeps externalAdReply metadata out of the media placeholder", () => {
+    const message = {
+      videoMessage: {
+        gifPlayback: true,
+        contextInfo: {
+          externalAdReply: {
+            title: "This Is Fine",
+            sourceUrl: "https://giphy.com/gifs/this-is-fine-3o7TK",
+            body: "A dog in a burning room",
+          },
+        },
+      },
+    } as unknown as import("baileys").proto.IMessage;
+
+    expect(extractMediaPlaceholder(message)).toBe("<media:gif>");
+    expect(extractExternalAdReplyContext(message)).toEqual({
+      title: "This Is Fine",
+      sourceUrl: "https://giphy.com/gifs/this-is-fine-3o7TK",
+      body: "A dog in a burning room",
+    });
   });
 
   it("extracts WhatsApp location messages", () => {

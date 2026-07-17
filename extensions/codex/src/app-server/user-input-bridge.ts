@@ -3,7 +3,12 @@
  * turns replies into app-server answer payloads.
  */
 import {
+  buildAgentHarnessUserInputAnswers,
+  deliverAgentHarnessUserInputPrompt,
   embeddedAgentLog,
+  emptyAgentHarnessUserInputAnswers,
+  type AgentHarnessUserInputOption,
+  type AgentHarnessUserInputQuestion,
   type EmbeddedRunAttemptParams,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { formatCodexDisplayText } from "../command-formatters.js";
@@ -13,29 +18,22 @@ import {
   type JsonObject,
   type JsonValue,
 } from "./protocol.js";
+import { emitCodexAppServerEvent } from "./run-attempt-lifecycle.js";
+import {
+  buildCodexUserInputPresentation,
+  registerCodexUserInputActions,
+  type CodexUserInputActionAnswer,
+} from "./user-input-actions.js";
 
 type PendingUserInput = {
   requestId: number | string;
   threadId: string;
   turnId: string;
   itemId: string;
-  questions: UserInputQuestion[];
+  questions: AgentHarnessUserInputQuestion[];
+  claimed: boolean;
   resolve: (value: JsonValue) => void;
   cleanup: () => void;
-};
-
-type UserInputQuestion = {
-  id: string;
-  header: string;
-  question: string;
-  isOther: boolean;
-  isSecret: boolean;
-  options: UserInputOption[] | null;
-};
-
-type UserInputOption = {
-  label: string;
-  description: string;
 };
 
 type CodexUserInputBridge = {
@@ -43,6 +41,12 @@ type CodexUserInputBridge = {
     id: number | string;
     params?: JsonValue;
   }) => Promise<JsonValue | undefined>;
+  claimPendingRequest: () =>
+    | {
+        answer: (text: string) => boolean;
+        cancel: () => boolean;
+      }
+    | undefined;
   handleQueuedMessage: (text: string) => boolean;
   handleNotification: (notification: CodexServerNotification) => void;
   cancelPending: () => void;
@@ -67,6 +71,14 @@ export function createCodexUserInputBridge(params: {
     current.resolve(value);
   };
 
+  const resolvePendingIfCurrent = (current: PendingUserInput, value: JsonValue): boolean => {
+    if (pending !== current) {
+      return false;
+    }
+    resolvePending(value);
+    return true;
+  };
+
   return {
     async handleRequest(request) {
       const requestParams = readUserInputParams(request.params);
@@ -84,31 +96,66 @@ export function createCodexUserInputBridge(params: {
 
       return new Promise<JsonValue>((resolve) => {
         const abortListener = () => resolvePending(emptyUserInputResponse());
-        const cleanup = () => params.signal?.removeEventListener("abort", abortListener);
-        pending = {
+        let disposeAction = () => {};
+        const cleanup = () => {
+          params.signal?.removeEventListener("abort", abortListener);
+          disposeAction();
+          emitQuestionEvent(params.paramsForRun, "resolved", requestParams.itemId);
+        };
+        const current: PendingUserInput = {
           requestId: request.id,
           threadId: requestParams.threadId,
           turnId: requestParams.turnId,
           itemId: requestParams.itemId,
           questions: requestParams.questions,
+          claimed: false,
           resolve,
           cleanup,
         };
+        const actionRegistration = requestParams.questions.some((question) => question.isSecret)
+          ? undefined
+          : registerCodexUserInputActions((answer) => {
+              const response = buildUserInputActionResponse(requestParams.questions, answer);
+              return response ? resolvePendingIfCurrent(current, response) : false;
+            });
+        disposeAction = actionRegistration?.dispose ?? disposeAction;
+        pending = current;
         params.signal?.addEventListener("abort", abortListener, { once: true });
         if (params.signal?.aborted) {
           resolvePending(emptyUserInputResponse());
           return;
         }
-        void deliverUserInputPrompt(params.paramsForRun, requestParams.questions).catch(
-          (error: unknown) => {
-            embeddedAgentLog.warn("failed to deliver codex user input prompt", { error });
-          },
+        emitQuestionEvent(
+          params.paramsForRun,
+          "requested",
+          requestParams.itemId,
+          requestParams.questions,
+          actionRegistration?.token,
         );
+        void deliverUserInputPrompt(
+          params.paramsForRun,
+          requestParams.questions,
+          actionRegistration?.token,
+        ).catch((error: unknown) => {
+          embeddedAgentLog.warn("failed to deliver codex user input prompt", { error });
+        });
       });
+    },
+    claimPendingRequest() {
+      const current = pending;
+      if (!current || current.claimed) {
+        return undefined;
+      }
+      current.claimed = true;
+      return {
+        answer: (text) =>
+          resolvePendingIfCurrent(current, buildUserInputResponse(current.questions, text)),
+        cancel: () => resolvePendingIfCurrent(current, emptyUserInputResponse()),
+      };
     },
     handleQueuedMessage(text) {
       const current = pending;
-      if (!current) {
+      if (!current || current.claimed) {
         return false;
       }
       resolvePending(buildUserInputResponse(current.questions, text));
@@ -142,7 +189,7 @@ function readUserInputParams(value: JsonValue | undefined):
       threadId: string;
       turnId: string;
       itemId: string;
-      questions: UserInputQuestion[];
+      questions: AgentHarnessUserInputQuestion[];
     }
   | undefined {
   if (!isJsonObject(value)) {
@@ -157,11 +204,11 @@ function readUserInputParams(value: JsonValue | undefined):
   }
   const questions = questionsRaw
     .map(readQuestion)
-    .filter((question): question is UserInputQuestion => Boolean(question));
+    .filter((question): question is AgentHarnessUserInputQuestion => Boolean(question));
   return { threadId, turnId, itemId, questions };
 }
 
-function readQuestion(value: JsonValue): UserInputQuestion | undefined {
+function readQuestion(value: JsonValue): AgentHarnessUserInputQuestion | undefined {
   if (!isJsonObject(value)) {
     return undefined;
   }
@@ -181,17 +228,17 @@ function readQuestion(value: JsonValue): UserInputQuestion | undefined {
   };
 }
 
-function readOptions(value: JsonValue | undefined): UserInputOption[] | null {
+function readOptions(value: JsonValue | undefined): AgentHarnessUserInputOption[] | null {
   if (!Array.isArray(value)) {
     return null;
   }
   const options = value
     .map(readOption)
-    .filter((option): option is UserInputOption => Boolean(option));
+    .filter((option): option is AgentHarnessUserInputOption => Boolean(option));
   return options.length > 0 ? options : null;
 }
 
-function readOption(value: JsonValue): UserInputOption | undefined {
+function readOption(value: JsonValue): AgentHarnessUserInputOption | undefined {
   if (!isJsonObject(value)) {
     return undefined;
   }
@@ -202,116 +249,78 @@ function readOption(value: JsonValue): UserInputOption | undefined {
 
 async function deliverUserInputPrompt(
   params: EmbeddedRunAttemptParams,
-  questions: UserInputQuestion[],
+  questions: AgentHarnessUserInputQuestion[],
+  actionToken?: string,
 ): Promise<void> {
-  const text = formatUserInputPrompt(questions);
-  if (params.onBlockReply) {
-    await params.onBlockReply({ text });
-    return;
-  }
-  await params.onPartialReply?.({ text });
-}
-
-function formatUserInputPrompt(questions: UserInputQuestion[]): string {
-  const lines = ["Codex needs input:"];
-  questions.forEach((question, index) => {
-    if (questions.length > 1) {
-      lines.push(
-        "",
-        `${index + 1}. ${formatCodexDisplayText(question.header)}`,
-        formatCodexDisplayText(question.question),
-      );
-    } else {
-      lines.push(
-        "",
-        formatCodexDisplayText(question.header),
-        formatCodexDisplayText(question.question),
-      );
-    }
-    if (question.isSecret) {
-      lines.push("This channel may show your reply to other participants.");
-    }
-    question.options?.forEach((option, optionIndex) => {
-      lines.push(
-        `${optionIndex + 1}. ${formatCodexDisplayText(option.label)}${
-          option.description ? ` - ${formatCodexDisplayText(option.description)}` : ""
-        }`,
-      );
-    });
-    if (question.isOther) {
-      lines.push("Other: reply with your own answer.");
-    }
+  await deliverAgentHarnessUserInputPrompt(params, questions, {
+    formatText: formatCodexDisplayText,
+    intro: "Codex needs input:",
+    presentation: actionToken ? buildCodexUserInputPresentation(questions, actionToken) : undefined,
   });
-  return lines.join("\n");
 }
 
-function buildUserInputResponse(questions: UserInputQuestion[], inputText: string): JsonObject {
+function emitQuestionEvent(
+  params: EmbeddedRunAttemptParams,
+  phase: "requested" | "resolved",
+  itemId: string,
+  questions?: AgentHarnessUserInputQuestion[],
+  actionToken?: string,
+): void {
+  void emitCodexAppServerEvent(params, {
+    stream: "question",
+    data: {
+      phase,
+      itemId,
+      source: "codex-app-server",
+      ...(questions ? { questions } : {}),
+      ...(actionToken ? { actionToken } : {}),
+    },
+  });
+}
+
+function buildUserInputResponse(
+  questions: AgentHarnessUserInputQuestion[],
+  inputText: string,
+): JsonObject {
   // Multi-question replies may use "header: answer" or numbered lines. Keep the
   // parser permissive so chat-channel replies remain ergonomic.
-  const answers: JsonObject = {};
-  if (questions.length === 1) {
-    const question = questions[0];
-    if (question) {
-      const answer = normalizeAnswer(inputText, question);
-      answers[question.id] = { answers: answer ? [answer] : [] };
-    }
-    return { answers };
-  }
-
-  const keyed = parseKeyedAnswers(inputText);
-  const fallbackLines = inputText
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  questions.forEach((question, index) => {
-    const key =
-      keyed.get(question.id.toLowerCase()) ??
-      keyed.get(question.header.toLowerCase()) ??
-      keyed.get(question.question.toLowerCase()) ??
-      keyed.get(String(index + 1));
-    const answer = key ?? fallbackLines[index] ?? "";
-    const normalized = answer ? normalizeAnswer(answer, question) : undefined;
-    answers[question.id] = { answers: normalized ? [normalized] : [] };
-  });
-  return { answers };
+  return buildAgentHarnessUserInputAnswers(questions, inputText) as unknown as JsonObject;
 }
 
-function normalizeAnswer(answer: string, question: UserInputQuestion): string | undefined {
-  const trimmed = answer.trim();
-  const options = question.options ?? [];
-  const optionIndex = /^\d+$/.test(trimmed) ? Number(trimmed) - 1 : -1;
-  const indexed = optionIndex >= 0 ? options[optionIndex] : undefined;
-  if (indexed) {
-    return indexed.label;
+function buildUserInputActionResponse(
+  questions: AgentHarnessUserInputQuestion[],
+  action: CodexUserInputActionAnswer,
+): JsonObject | undefined {
+  if (action.type === "choice") {
+    const question = questions.length === 1 ? questions[0] : undefined;
+    const option = question?.options?.[action.optionIndex];
+    return question && option
+      ? ({ answers: { [question.id]: { answers: [option.label] } } } as JsonObject)
+      : undefined;
   }
-  const exact = options.find((option) => option.label.toLowerCase() === trimmed.toLowerCase());
-  if (exact) {
-    return exact.label;
-  }
-  if (options.length > 0 && !question.isOther) {
+  if (
+    Object.keys(action.answers).length !== questions.length ||
+    !questions.every((question) => Object.hasOwn(action.answers, question.id))
+  ) {
     return undefined;
   }
-  return trimmed || undefined;
-}
-
-function parseKeyedAnswers(inputText: string): Map<string, string> {
-  const answers = new Map<string, string>();
-  for (const line of inputText.split(/\r?\n/)) {
-    const match = line.match(/^\s*([^:=-]+?)\s*[:=-]\s*(.+?)\s*$/);
-    if (!match) {
-      continue;
+  const answerEntries: Array<[string, { answers: string[] }]> = [];
+  for (const question of questions) {
+    const rawAnswer = action.answers[question.id];
+    if (!rawAnswer?.trim()) {
+      return undefined;
     }
-    const key = match[1]?.trim().toLowerCase();
-    const value = match[2]?.trim();
-    if (key && value) {
-      answers.set(key, value);
+    const exactOption = question.options?.find((option) => option.label === rawAnswer);
+    if (!exactOption && question.options?.length && !question.isOther) {
+      return undefined;
     }
+    answerEntries.push([question.id, { answers: [exactOption?.label ?? rawAnswer] }]);
   }
-  return answers;
+  return { answers: Object.fromEntries(answerEntries) } as unknown as JsonObject;
 }
 
 function emptyUserInputResponse(): JsonObject {
-  return { answers: {} };
+  return emptyAgentHarnessUserInputAnswers() as unknown as JsonObject;
 }
 
 function readString(record: JsonObject, key: string): string | undefined {

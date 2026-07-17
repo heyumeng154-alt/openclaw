@@ -6,11 +6,15 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginLookUpTable } from "../plugins/plugin-lookup-table.js";
 import type { PluginRegistryParams } from "../plugins/registry-types.js";
 import type { PluginRegistry } from "../plugins/registry.js";
-import { pinActivePluginChannelRegistry } from "../plugins/runtime.js";
+import {
+  pinActivePluginChannelRegistry,
+  pinActivePluginSessionExtensionRegistry,
+} from "../plugins/runtime.js";
 import {
   setGatewayNodesRuntime,
   setGatewaySubagentRuntime,
 } from "../plugins/runtime/gateway-bindings.js";
+import { resolveDurableWorkerProviderAutoEnabledReasons } from "../plugins/worker-provider-registry.js";
 import { mergeActivationSectionsIntoRuntimeConfig } from "./plugin-activation-runtime-config.js";
 import type { GatewayRequestHandler } from "./server-methods/types.js";
 import {
@@ -58,6 +62,11 @@ function installGatewayPluginRuntimeEnvironment(cfg: OpenClawConfig) {
   setGatewayNodesRuntime(createGatewayNodesRuntime());
 }
 
+function pinGatewayPluginRuntimeRegistries(pluginRegistry: PluginRegistry): void {
+  pinActivePluginChannelRegistry(pluginRegistry);
+  pinActivePluginSessionExtensionRegistry(pluginRegistry);
+}
+
 // Diagnostics are logged after registry priming so startup output contains
 // plugin ids/source hints without exposing internal diagnostic objects.
 function logGatewayPluginDiagnostics(params: {
@@ -100,13 +109,20 @@ export function prepareGatewayPluginLoad(params: GatewayPluginBootstrapParams) {
           runtimeConfig: params.cfg,
           activationConfig: autoEnabled.config,
         });
+  const durableReasons = params.pluginLookUpTable
+    ? resolveDurableWorkerProviderAutoEnabledReasons(
+        params.pluginLookUpTable.manifestRegistry,
+        params.pluginLookUpTable.workerProviderIds,
+      )
+    : {};
+  const autoEnabledReasons = { ...autoEnabled.autoEnabledReasons, ...durableReasons };
   // Runtime bindings must be installed before loadGatewayPlugins so plugin
   // hooks that inspect gateway/node/subagent helpers see current config.
   installGatewayPluginRuntimeEnvironment(resolvedConfig);
   const loaded = loadGatewayPlugins({
     cfg: resolvedConfig,
     activationSourceConfig,
-    autoEnabledReasons: autoEnabled.autoEnabledReasons,
+    autoEnabledReasons,
     workspaceDir: params.workspaceDir,
     log: params.log,
     ...(params.coreGatewayHandlers !== undefined && {
@@ -142,7 +158,7 @@ export function loadGatewayStartupPlugins(
 ) {
   return prepareGatewayPluginLoad({
     ...params,
-    beforePrimeRegistry: pinActivePluginChannelRegistry,
+    beforePrimeRegistry: pinGatewayPluginRuntimeRegistries,
   });
 }
 
@@ -155,6 +171,6 @@ export function reloadDeferredGatewayPlugins(
 ) {
   return prepareGatewayPluginLoad({
     ...params,
-    beforePrimeRegistry: pinActivePluginChannelRegistry,
+    beforePrimeRegistry: pinGatewayPluginRuntimeRegistries,
   });
 }

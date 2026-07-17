@@ -16,7 +16,7 @@ import { compileConfigRegexes, type ConfigRegexRejectReason } from "../../securi
 import { escapeRegExp } from "../../utils.js";
 import type { MsgContext } from "../templating.js";
 import type { BuildMentionRegexesOptions, ExplicitMentionSignal } from "./mentions.types.js";
-export type { BuildMentionRegexesOptions, ExplicitMentionSignal } from "./mentions.types.js";
+export type { BuildMentionRegexesOptions } from "./mentions.types.js";
 
 function deriveMentionPatterns(identity?: { name?: string; emoji?: string }) {
   const patterns: string[] = [];
@@ -196,11 +196,11 @@ export function stripStructuralPrefixes(text: string): string {
       ? /^[ \t]*(?!\/)[^\n:]{1,120}:\s+/gm
       : /^[ \t]*[^\n:]{1,120}:\s+/gm;
 
-  return afterEnvelope
-    .replace(senderPrefixPattern, "")
-    .replace(/\\n/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  const stripped = afterEnvelope.replace(senderPrefixPattern, "").replace(/\\n/g, " ").trim();
+  if (stripped.startsWith("/")) {
+    return stripped.replace(/[ \t]+/g, " ");
+  }
+  return stripped.replace(/\s+/g, " ");
 }
 
 /** Removes bot mentions from command text before command normalization. */

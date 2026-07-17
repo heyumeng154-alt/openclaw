@@ -1,5 +1,4 @@
 // CLI adapter for invoking native provider hooks through direct relay or gateway fallback.
-import { Readable, Writable } from "node:stream";
 import {
   invokeNativeHookRelayBridge,
   isNativeHookRelayBridgeStaleRegistrationError,
@@ -17,6 +16,7 @@ const MAX_NATIVE_HOOK_STDIN_BYTES = 1024 * 1024;
 export type NativeHookRelayCliOptions = {
   provider?: string;
   relayId?: string;
+  stateDb?: string;
   generation?: string;
   event?: string;
   preToolUseUnavailable?: string;
@@ -95,6 +95,7 @@ export async function runNativeHookRelayCli(
         invokeBridge({
           provider,
           relayId,
+          stateDbPath: opts.stateDb?.trim() || undefined,
           generation,
           event,
           rawPayload,
@@ -312,24 +313,5 @@ function writeNativeHookRelayDeadlineResponse(params: {
     provider: params.provider,
     event: params.event,
     message: "Native hook relay timed out",
-  });
-}
-
-/** Create a readable text stream for relay CLI tests. */
-export function createReadableTextStream(text: string): NodeJS.ReadableStream {
-  return Readable.from([text]);
-}
-
-/** Create a writable stream that exposes captured text for relay CLI tests. */
-export function createWritableTextBuffer(): NodeJS.WritableStream & { text: () => string } {
-  const chunks: Buffer[] = [];
-  const stream = new Writable({
-    write(chunk, _encoding, callback) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
-      callback();
-    },
-  });
-  return Object.assign(stream, {
-    text: () => Buffer.concat(chunks).toString("utf8"),
   });
 }

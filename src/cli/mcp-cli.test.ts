@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as mcpHttpFetch from "../agents/mcp-http-fetch.js";
 import { withTempHome } from "../config/home-env.test-harness.js";
 import { registerMcpCli } from "./mcp-cli.js";
 
@@ -161,6 +162,62 @@ describe("mcp cli", () => {
     });
   });
 
+  it("rejects hexadecimal MCP timeout options before writing configuration", async () => {
+    await withTempHome("openclaw-cli-mcp-home-", async (home) => {
+      const workspaceDir = await createWorkspace();
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      vi.spyOn(process, "cwd").mockReturnValue(workspaceDir);
+
+      await expect(
+        runMcpCommand([
+          "mcp",
+          "add",
+          "docs",
+          "--url",
+          "https://mcp.example.com/mcp",
+          "--timeout",
+          "0x10",
+          "--no-probe",
+        ]),
+      ).rejects.toThrow("__exit__:1");
+      expect(lastErrorLine()).toBe("--timeout must be a positive number.");
+      await expect(fs.readFile(configPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+
+      await runMcpCommand(["mcp", "set", "docs", '{"url":"https://mcp.example.com","timeout":12}']);
+      mockError.mockClear();
+
+      await expect(
+        runMcpCommand(["mcp", "configure", "docs", "--connect-timeout", "0x3"]),
+      ).rejects.toThrow("__exit__:1");
+      expect(lastErrorLine()).toBe("--connect-timeout must be a positive number.");
+
+      mockLog.mockClear();
+      await runMcpCommand(["mcp", "show", "docs", "--json"]);
+      expect(JSON.parse(lastLogLine())).toEqual({
+        url: "https://mcp.example.com",
+        timeout: 12,
+      });
+    });
+  });
+
+  it("labels listed MCP servers as OpenClaw-managed", async () => {
+    await withTempHome("openclaw-cli-mcp-home-", async () => {
+      const workspaceDir = await createWorkspace();
+      vi.spyOn(process, "cwd").mockReturnValue(workspaceDir);
+
+      await runMcpCommand(["mcp", "set", "context7", '{"command":"uvx","args":["context7-mcp"]}']);
+      mockLog.mockClear();
+
+      await runMcpCommand(["mcp", "list"]);
+
+      const output = mockLog.mock.calls.map((call) => String(call[0])).join("\n");
+      expect(output).toContain("OpenClaw-managed MCP servers (");
+      expect(output).toContain("- context7");
+      expect(output).toContain("OpenClaw-managed mcp.servers entries");
+      expect(output).toContain("does not include mcporter servers from config/mcporter.json");
+    });
+  });
+
   it("updates per-server MCP tool filters", async () => {
     await withTempHome("openclaw-cli-mcp-home-", async (home) => {
       const workspaceDir = await createWorkspace();
@@ -287,6 +344,7 @@ describe("mcp cli", () => {
     await withTempHome("openclaw-cli-mcp-home-", async () => {
       const workspaceDir = await createWorkspace();
       vi.spyOn(process, "cwd").mockReturnValue(workspaceDir);
+      const buildMcpHttpFetch = vi.spyOn(mcpHttpFetch, "buildMcpHttpFetch");
       runMcpOAuthLogin.mockResolvedValueOnce("authorized");
 
       await runMcpCommand([
@@ -307,6 +365,12 @@ describe("mcp cli", () => {
       ]);
       await runMcpCommand(["mcp", "login", "docs", "--code", "abc123"]);
 
+      expect(buildMcpHttpFetch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          resourceUrl: "https://mcp.example.com",
+          timeoutMs: 9_000,
+        }),
+      );
       expect(runMcpOAuthLogin).toHaveBeenCalledWith({
         serverName: "docs",
         serverUrl: "https://mcp.example.com",
@@ -640,7 +704,9 @@ describe("mcp cli", () => {
 
       mockLog.mockClear();
       await runMcpCommand(["mcp", "list"]);
-      expect(lastLogLine()).toContain("No MCP servers configured in ");
+      const output = mockLog.mock.calls.map((call) => String(call[0])).join("\n");
+      expect(output).toContain("No OpenClaw-managed MCP servers configured in ");
+      expect(output).toContain("does not include mcporter servers from config/mcporter.json");
     });
   });
 

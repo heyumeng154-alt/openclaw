@@ -14,7 +14,6 @@ const hoisted = vi.hoisted(() => ({
   callGatewayMock: vi.fn(),
   loadSessionStoreMock: vi.fn(),
   updateSessionStoreMock: vi.fn(),
-  pruneLegacyStoreKeysMock: vi.fn(),
   registerSubagentRunMock: vi.fn(),
   emitSessionLifecycleEventMock: vi.fn(),
   dispatchGatewayMethodInProcessMock: vi.fn(),
@@ -23,7 +22,7 @@ const hoisted = vi.hoisted(() => ({
   configOverride: {} as Record<string, unknown>,
 }));
 
-let resetSubagentRegistryForTests: typeof import("./subagent-registry.js").resetSubagentRegistryForTests;
+let resetSubagentRegistryForTests: typeof import("./subagent-registry.test-helpers.js").resetSubagentRegistryForTests;
 let spawnSubagentDirect: typeof import("./subagent-spawn.js").spawnSubagentDirect;
 
 function createConfigOverride(overrides?: Record<string, unknown>) {
@@ -74,7 +73,6 @@ describe("spawnSubagentDirect seam flow", () => {
       getRuntimeConfig: () => hoisted.configOverride,
       loadSessionStoreMock: hoisted.loadSessionStoreMock,
       updateSessionStoreMock: hoisted.updateSessionStoreMock,
-      pruneLegacyStoreKeysMock: hoisted.pruneLegacyStoreKeysMock,
       registerSubagentRunMock: hoisted.registerSubagentRunMock,
       emitSessionLifecycleEventMock: hoisted.emitSessionLifecycleEventMock,
       resolveAgentConfig: hoisted.resolveAgentConfigMock,
@@ -89,7 +87,6 @@ describe("spawnSubagentDirect seam flow", () => {
     hoisted.callGatewayMock.mockReset();
     hoisted.loadSessionStoreMock.mockReset();
     hoisted.updateSessionStoreMock.mockReset();
-    hoisted.pruneLegacyStoreKeysMock.mockReset();
     hoisted.registerSubagentRunMock.mockReset();
     hoisted.emitSessionLifecycleEventMock.mockReset();
     hoisted.dispatchGatewayMethodInProcessMock.mockReset();
@@ -187,6 +184,51 @@ describe("spawnSubagentDirect seam flow", () => {
     expect(result.childSessionKey).toMatch(/^agent:task-manager:subagent:/);
   });
 
+  it("registers the target agent id for cross-agent task attribution", async () => {
+    hoisted.configOverride = createConfigOverride({
+      session: {
+        scope: "global",
+      },
+      agents: {
+        defaults: {
+          workspace: os.tmpdir(),
+        },
+        list: [
+          {
+            id: "main",
+            workspace: "/tmp/workspace-main",
+            subagents: {
+              allowAgents: ["worker"],
+            },
+          },
+          {
+            id: "worker",
+            workspace: "/tmp/workspace-worker",
+          },
+        ],
+      },
+    });
+
+    const result = await spawnSubagentDirect(
+      {
+        task: "attribute worker run",
+        agentId: "worker",
+      },
+      {
+        agentSessionKey: "global",
+        requesterAgentIdOverride: "main",
+      },
+    );
+
+    expect(result.status).toBe("accepted");
+    expect(result.childSessionKey).toMatch(/^agent:worker:subagent:/);
+    const registerInput = firstRegisteredSubagentRun();
+    expect(registerInput.childSessionKey).toBe(result.childSessionKey);
+    expect(registerInput.agentId).toBe("worker");
+    expect(registerInput.requesterSessionKey).toBe("global");
+    expect(registerInput.requesterAgentId).toBe("main");
+  });
+
   it("accepts a spawned run across session patching, runtime-model persistence, registry registration, and lifecycle emission", async () => {
     const operations: string[] = [];
     let persistedStore: Record<string, Record<string, unknown>> | undefined;
@@ -230,7 +272,6 @@ describe("spawnSubagentDirect seam flow", () => {
     expect(result.childSessionKey).toMatch(/^agent:main:subagent:/);
 
     const childSessionKey = result.childSessionKey as string;
-    expect(hoisted.pruneLegacyStoreKeysMock).toHaveBeenCalledTimes(3);
     expect(hoisted.updateSessionStoreMock).toHaveBeenCalledTimes(3);
     const registerInput = firstRegisteredSubagentRun();
     const requesterOrigin = requireRecord(registerInput.requesterOrigin);
@@ -1064,3 +1105,4 @@ describe("spawnSubagentDirect seam flow", () => {
     ).toBe(false);
   });
 });
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

@@ -5,6 +5,7 @@ import {
   resolveAcpThreadSessionDetailLines,
 } from "@openclaw/acp-core/runtime/session-identifiers";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { getAcpSessionManager } from "../../../acp/control-plane/manager.js";
 import { resolveAcpSessionResolutionError } from "../../../acp/control-plane/manager.utils.js";
 import {
@@ -36,7 +37,7 @@ import {
   resolveThreadBindingPlacementForCurrentContext,
   resolveThreadBindingSpawnPolicy,
 } from "../../../channels/thread-bindings-policy.js";
-import { updateSessionStore } from "../../../config/sessions.js";
+import { updateSessionEntry } from "../../../config/sessions/session-accessor.js";
 import type { SessionAcpMeta } from "../../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
@@ -474,17 +475,16 @@ async function persistSpawnedSessionLabel(params: {
   if (!params.commandParams.storePath) {
     return;
   }
-  await updateSessionStore(params.commandParams.storePath, (store) => {
-    const existing = store[params.sessionKey];
-    if (!existing) {
-      return;
-    }
-    store[params.sessionKey] = {
-      ...existing,
+  await updateSessionEntry(
+    {
+      storePath: params.commandParams.storePath,
+      sessionKey: params.sessionKey,
+    },
+    () => ({
       label,
       updatedAt: now,
-    };
-  });
+    }),
+  );
 }
 
 export async function handleAcpSpawnAction(
@@ -775,6 +775,7 @@ async function runAcpSteer(params: {
   await acpManager.runTurn({
     cfg: params.cfg,
     sessionKey: params.sessionKey,
+    provenance: "agent",
     text: params.instruction,
     mode: "steer",
     requestId: params.requestId,
@@ -788,7 +789,7 @@ async function runAcpSteer(params: {
       if (event.text) {
         output += event.text;
         if (output.length > ACP_STEER_OUTPUT_LIMIT) {
-          output = `${output.slice(0, ACP_STEER_OUTPUT_LIMIT)}…`;
+          output = `${truncateUtf16Safe(output, ACP_STEER_OUTPUT_LIMIT)}…`;
         }
       }
     },
@@ -892,3 +893,4 @@ export async function handleAcpCloseAction(
     },
   });
 }
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

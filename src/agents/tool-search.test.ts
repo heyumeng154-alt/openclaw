@@ -1,5 +1,7 @@
 // Tool search tests cover catalog compaction, scoped tool lookup, raw fallback
 // tools, hooks, abort wrapping, and transcript projection.
+
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setPluginToolMeta } from "../plugins/tools.js";
 import { wrapToolWithAbortSignal } from "./agent-tools.abort.js";
@@ -7,8 +9,8 @@ import {
   isToolWrappedWithBeforeToolCallHook,
   wrapToolWithBeforeToolCallHook,
 } from "./agent-tools.before-tool-call.js";
+import { SESSION_TOOL_STDERR_TAIL_BYTES } from "./sessions/tools/limits.js";
 import {
-  testing,
   addClientToolsToToolSearchCatalog,
   applyToolSearchCatalog,
   applyToolSchemaDirectoryCatalog,
@@ -18,12 +20,15 @@ import {
   createToolSearchTools,
   estimateToolSchemaDirectoryToolNames,
   projectToolSearchTargetTranscriptMessages,
+  registerHeadlessToolSearchCatalog,
+  resolveToolSearchConfig,
   resolveToolSearchCatalogTool,
   TOOL_CALL_RAW_TOOL_NAME,
   TOOL_DESCRIBE_RAW_TOOL_NAME,
   TOOL_SEARCH_CODE_MODE_TOOL_NAME,
   TOOL_SEARCH_RAW_TOOL_NAME,
 } from "./tool-search.js";
+import { testing } from "./tool-search.test-support.js";
 import { jsonResult, type AnyAgentTool } from "./tools/common.js";
 
 function fakeTool(name: string, description: string): AnyAgentTool {
@@ -50,6 +55,25 @@ function pluginTool(name: string, description: string, pluginId = "fake-catalog"
   return tool;
 }
 
+function directOnlyTool(name: string, description: string): AnyAgentTool {
+  return { ...fakeTool(name, description), catalogMode: "direct-only" };
+}
+
+function mcpPluginTool(name: string, description: string, pluginId = "fake-catalog"): AnyAgentTool {
+  const tool = fakeTool(name, description);
+  setPluginToolMeta(tool, {
+    pluginId,
+    optional: true,
+    mcp: {
+      serverName: "remote-demo",
+      safeServerName: "remoteDemo",
+      toolName: "echo",
+      operation: "tool",
+    },
+  });
+  return tool;
+}
+
 function resultDetails(result: { details?: unknown }): Record<string, unknown> {
   if (!result.details || typeof result.details !== "object") {
     throw new Error("Expected result details");
@@ -66,13 +90,89 @@ function mockCall(mock: { mock: { calls: unknown[][] } }, index = 0): unknown[] 
 }
 
 describe("Tool Search", () => {
+  it("keeps direct-only tools visible and out of the structured catalog", () => {
+    const catalogRef = createToolSearchCatalogRef();
+    const computer = directOnlyTool("computer", "Control a desktop");
+    const lookup = pluginTool("fake_lookup", "Look up a record");
+    const compacted = applyToolSearchCatalog({
+      tools: [
+        fakeTool(TOOL_SEARCH_RAW_TOOL_NAME, "search"),
+        fakeTool(TOOL_DESCRIBE_RAW_TOOL_NAME, "describe"),
+        fakeTool(TOOL_CALL_RAW_TOOL_NAME, "call"),
+        computer,
+        lookup,
+      ],
+      config: { tools: { toolSearch: { enabled: true, mode: "tools" } } } as never,
+      catalogRef,
+      // Caller-specific selection may narrow eligibility, never widen it.
+      shouldCatalogTool: () => true,
+    });
+
+    expect(compacted.tools.map((tool) => tool.name)).toEqual([
+      TOOL_SEARCH_RAW_TOOL_NAME,
+      TOOL_DESCRIBE_RAW_TOOL_NAME,
+      TOOL_CALL_RAW_TOOL_NAME,
+      "computer",
+    ]);
+    expect(catalogRef.current?.entries.map((entry) => entry.name)).toEqual(["fake_lookup"]);
+  });
+
+  it("keeps direct-only tools visible in schema-directory mode", () => {
+    const catalogRef = createToolSearchCatalogRef();
+    const compacted = applyToolSchemaDirectoryCatalog({
+      tools: [
+        fakeTool(TOOL_SEARCH_RAW_TOOL_NAME, "search"),
+        fakeTool(TOOL_DESCRIBE_RAW_TOOL_NAME, "describe"),
+        fakeTool(TOOL_CALL_RAW_TOOL_NAME, "call"),
+        directOnlyTool("computer", "Control a desktop"),
+        pluginTool("fake_lookup", "Look up a record"),
+      ],
+      config: { tools: { toolSearch: { enabled: true, mode: "directory" } } } as never,
+      catalogRef,
+      hydrateToolNames: [],
+    });
+
+    expect(compacted.tools.map((tool) => tool.name)).toEqual([
+      TOOL_SEARCH_RAW_TOOL_NAME,
+      TOOL_DESCRIBE_RAW_TOOL_NAME,
+      TOOL_CALL_RAW_TOOL_NAME,
+      "computer",
+    ]);
+    expect(catalogRef.current?.entries.map((entry) => entry.name)).toEqual(["fake_lookup"]);
+  });
+
+  it("omits direct-only tools from headless catalogs", () => {
+    const catalogRef = createToolSearchCatalogRef();
+    registerHeadlessToolSearchCatalog({
+      catalogRef,
+      tools: [
+        directOnlyTool("computer", "Control a desktop"),
+        pluginTool("fake_lookup", "Look up a record"),
+      ],
+    });
+
+    expect(catalogRef.current?.entries.map((entry) => entry.name)).toEqual(["fake_lookup"]);
+  });
+
+  it("keeps bounded directory descriptions UTF-16 well-formed", () => {
+    const sessionId = "session-utf16-directory";
+    const config = { tools: { toolSearch: { enabled: true, mode: "directory" } } } as never;
+    const searchTool = fakeTool(TOOL_SEARCH_RAW_TOOL_NAME, "search");
+    const target = pluginTool("fake_utf16", `${"x".repeat(176)}🚀tail`);
+    applyToolSchemaDirectoryCatalog({ tools: [searchTool, target], config, sessionId });
+
+    const directory = buildToolSchemaDirectoryPrompt({ sessionId, config });
+
+    expect(directory).toContain(`${"x".repeat(176)}...`);
+    expect(directory).not.toContain("\uD83D");
+  });
   afterEach(() => {
     testing.setToolSearchCodeModeSupportedForTest(undefined);
     testing.setToolSearchMinCodeTimeoutMsForTest(undefined);
   });
 
   it("enables object config when a mode is set", () => {
-    const resolved = testing.resolveToolSearchConfig({
+    const resolved = resolveToolSearchConfig({
       tools: {
         toolSearch: {
           mode: "directory",
@@ -87,7 +187,7 @@ describe("Tool Search", () => {
     testing.setToolSearchCodeModeSupportedForTest(false);
     try {
       const config = { tools: { toolSearch: true } } as never;
-      const resolved = testing.resolveToolSearchConfig(config);
+      const resolved = resolveToolSearchConfig(config);
       const compacted = applyToolSearchCatalog({
         tools: [
           fakeTool(TOOL_SEARCH_CODE_MODE_TOOL_NAME, "code mode"),
@@ -110,6 +210,98 @@ describe("Tool Search", () => {
     } finally {
       testing.setToolSearchCodeModeSupportedForTest(undefined);
     }
+  });
+
+  it("guides structured control tools toward compact catalog calls", () => {
+    const tools = createToolSearchTools({ config: {} as never });
+    const byName = new Map(tools.map((tool) => [tool.name, tool]));
+    expect(byName.get(TOOL_SEARCH_CODE_MODE_TOOL_NAME)?.description).toContain(
+      "search(query: string, options?)",
+    );
+    expect(byName.get(TOOL_SEARCH_CODE_MODE_TOOL_NAME)?.description).toContain(
+      "JSON values normally live in `result.details`",
+    );
+    expect(byName.get(TOOL_SEARCH_RAW_TOOL_NAME)?.description).toContain(
+      "use tool_describe only when you need its input schema",
+    );
+    expect(byName.get(TOOL_DESCRIBE_RAW_TOOL_NAME)?.description).toContain(
+      "when its input is not already clear",
+    );
+  });
+
+  it("includes bounded input signatures in compact search hits", async () => {
+    const target = pluginTool("fake_update", "Update a fake record");
+    const openTarget = pluginTool("fake_open", "Accept constrained open input");
+    const mcpTarget = mcpPluginTool("remote_echo", "Echo through remote MCP");
+    target.parameters = {
+      type: "object",
+      required: ["id"],
+      properties: {
+        id: { type: "string" },
+        mode: { type: "string", enum: ["drip", "flood"] },
+        policy: { enum: ["auto", { mode: "custom" }] },
+        nested: {
+          type: "array",
+          items: {
+            type: "array",
+            items: {
+              type: "array",
+              items: {
+                type: "array",
+                items: { type: "array", items: { type: "string" } },
+              },
+            },
+          },
+        },
+        zones: { type: "array", items: { type: "string", enum: ["north", "south"] } },
+      },
+    };
+    openTarget.parameters = {
+      type: "object",
+      required: ["token"],
+      additionalProperties: true,
+    };
+    const config = { tools: { toolSearch: { mode: "tools" } } } as never;
+    applyToolSearchCatalog({
+      tools: [
+        fakeTool(TOOL_SEARCH_RAW_TOOL_NAME, "search"),
+        fakeTool(TOOL_DESCRIBE_RAW_TOOL_NAME, "describe"),
+        fakeTool(TOOL_CALL_RAW_TOOL_NAME, "call"),
+        target,
+        openTarget,
+        mcpTarget,
+      ],
+      config,
+      sessionId: "session-input-hint",
+    });
+    const runtimeTools = createToolSearchTools({ config, sessionId: "session-input-hint" });
+    const search = expectDefined(
+      runtimeTools.find((tool) => tool.name === TOOL_SEARCH_RAW_TOOL_NAME),
+      "search tool",
+    );
+    const result = resultDetails(await search.execute("call-search", { query: "update record" }));
+
+    expect(result).toEqual([
+      expect.objectContaining({
+        name: "fake_update",
+        input:
+          '{ id: string; mode?: "drip" | "flood"; nested?: Array<Array<Array<Array<unknown>>>>; policy?: unknown; zones?: Array<"north" | "south"> }',
+      }),
+    ]);
+    expect(JSON.stringify(result)).not.toContain("parameters");
+
+    const openResult = resultDetails(
+      await search.execute("call-search-open", { query: "constrained open input" }),
+    );
+    expect(openResult).toContainEqual(
+      expect.objectContaining({ name: "fake_open", input: "{ ... }" }),
+    );
+
+    const mcpResult = resultDetails(
+      await search.execute("call-search-mcp", { query: "remote echo" }),
+    );
+    expect(mcpResult).toContainEqual(expect.objectContaining({ name: "remote_echo" }));
+    expect(mcpResult).not.toContainEqual(expect.objectContaining({ input: expect.anything() }));
   });
 
   it("compacts plugin tools behind the code surface and can search, describe, and call them", async () => {
@@ -136,13 +328,16 @@ describe("Tool Search", () => {
       sessionKey: "agent:main:main",
       config: compacted.tools[0] ? {} : undefined,
     });
-    const result = await runtimeCodeTool.execute("call-1", {
-      code: `
+    const result = await expectDefined(runtimeCodeTool, "runtimeCodeTool test invariant").execute(
+      "call-1",
+      {
+        code: `
         const hits = await openclaw.tools.search("ticket", { limit: 1 });
         const described = await openclaw.tools.describe(hits[0].id);
         return await openclaw.tools.call(described.id, { value: "ship" });
       `,
-    });
+      },
+    );
 
     const alphaCall = mockCall(vi.mocked(alpha.execute));
     expect(alphaCall[0]).toBe("tool_search_code:call-1:fake_create_ticket:1");
@@ -196,7 +391,7 @@ describe("Tool Search", () => {
       runId: "run-a",
       config,
     });
-    const runACallTool = runATools[3];
+    const runACallTool = expectDefined(runATools[3], "runATools[3] test invariant");
     await runACallTool.execute("call-run-a", {
       id: "fake_run_a",
       args: { value: "A" },
@@ -245,7 +440,7 @@ describe("Tool Search", () => {
       catalogRef: localRef,
       config,
     });
-    const callTool = tools[3];
+    const callTool = expectDefined(tools[3], "tools[3] test invariant");
     await callTool.execute("call-local-ref", {
       id: "fake_local_ref",
       args: { value: "local" },
@@ -829,7 +1024,7 @@ describe("Tool Search", () => {
     expect(compacted.catalogToolCount).toBe(0);
   });
 
-  it("moves client tools into the same catalog when a session catalog exists", () => {
+  it("moves client tools into the same catalog and preserves client execution provenance", async () => {
     const codeTool = fakeTool(TOOL_SEARCH_CODE_MODE_TOOL_NAME, "code mode");
     const config = {
       tools: {
@@ -855,6 +1050,23 @@ describe("Tool Search", () => {
       .get("session:session-client")
       ?.entries.find((entry) => entry.id === "client:client:client_pick_file");
     expect(clientEntry?.source).toBe("client");
+
+    const executeTool = vi.fn(async () => jsonResult({ status: "ok" }));
+    const runtimeTools = createToolSearchTools({
+      sessionId: "session-client",
+      config: {},
+      executeTool,
+    });
+    await runtimeTools[3]?.execute("call-client", {
+      id: "client:client:client_pick_file",
+      args: { path: "/tmp/file" },
+    });
+
+    expect(mockCall(executeTool)[0]).toMatchObject({
+      source: "client",
+      sourceName: "client",
+      toolName: "client_pick_file",
+    });
   });
 
   it("keeps client tools visible in directory mode", () => {
@@ -912,7 +1124,7 @@ describe("Tool Search", () => {
       sessionKey: "agent:main:main",
       config: {},
     });
-    await runtimeCodeTool.execute("call-hooks", {
+    await expectDefined(runtimeCodeTool, "runtimeCodeTool test invariant").execute("call-hooks", {
       code: `return await openclaw.tools.call("fake_hooked", { value: "ok" });`,
     });
     const targetCall = mockCall(vi.mocked(target.execute));
@@ -966,12 +1178,15 @@ describe("Tool Search", () => {
       sessionKey: "agent:main:main",
       config: {},
     });
-    await runtimeCodeTool.execute("call-repeated", {
-      code: `
+    await expectDefined(runtimeCodeTool, "runtimeCodeTool test invariant").execute(
+      "call-repeated",
+      {
+        code: `
         await openclaw.tools.call("fake_repeated", { value: "one" });
         return await openclaw.tools.call("fake_repeated", { value: "two" });
       `,
-    });
+      },
+    );
 
     const firstCall = mockCall(vi.mocked(target.execute));
     expect(firstCall[0]).toBe("tool_search_code:call-repeated:fake_repeated:1");
@@ -985,9 +1200,12 @@ describe("Tool Search", () => {
     expect(secondCall[2]).toBeInstanceOf(AbortSignal);
     expect(secondCall[3]).toBeUndefined();
     expect(secondCall[4]).toBeUndefined();
-    await runtimeCodeTool.execute("call-repeated-again", {
-      code: `return await openclaw.tools.call("fake_repeated", { value: "three" });`,
-    });
+    await expectDefined(runtimeCodeTool, "runtimeCodeTool test invariant").execute(
+      "call-repeated-again",
+      {
+        code: `return await openclaw.tools.call("fake_repeated", { value: "three" });`,
+      },
+    );
 
     const thirdCall = mockCall(vi.mocked(target.execute), 2);
     expect(thirdCall[0]).toBe("tool_search_code:call-repeated-again:fake_repeated:1");
@@ -995,6 +1213,31 @@ describe("Tool Search", () => {
     expect(thirdCall[2]).toBeInstanceOf(AbortSignal);
     expect(thirdCall[3]).toBeUndefined();
     expect(thirdCall[4]).toBeUndefined();
+  });
+
+  it("classifies plugin tools with MCP metadata as MCP catalog entries", () => {
+    const codeTool = fakeTool(TOOL_SEARCH_CODE_MODE_TOOL_NAME, "code mode");
+    const target = mcpPluginTool("remote_echo", "Echo through remote MCP", "remote-demo");
+
+    applyToolSearchCatalog({
+      tools: [codeTool, target],
+      config: { tools: { toolSearch: true } } as never,
+      sessionId: "session-mcp-node",
+    });
+
+    const entry = testing.sessionCatalogs
+      .get("session:session-mcp-node")
+      ?.entries.find((candidate) => candidate.name === "remote_echo");
+    expect(entry).toMatchObject({
+      id: "mcp:remoteDemo:remote_echo",
+      source: "mcp",
+      sourceName: "remoteDemo",
+      mcp: {
+        serverName: "remote-demo",
+        safeServerName: "remoteDemo",
+        toolName: "echo",
+      },
+    });
   });
 
   it("routes bridged calls through the configured catalog executor", async () => {
@@ -1018,8 +1261,8 @@ describe("Tool Search", () => {
       abortSignal: abortController.signal,
       executeTool,
     });
-    const runtimeCodeTool = runtimeTools[0];
-    const runtimeCallTool = runtimeTools[3];
+    const runtimeCodeTool = expectDefined(runtimeTools[0], "runtime code tool");
+    const runtimeCallTool = expectDefined(runtimeTools[3], "runtimeTools[3] test invariant");
     await runtimeCodeTool.execute(
       "call-lifecycle",
       {
@@ -1033,6 +1276,8 @@ describe("Tool Search", () => {
     const firstExecuteInput = mockCall(executeTool)[0] as {
       tool?: { name?: string };
       toolName?: string;
+      source?: string;
+      sourceName?: string;
       toolCallId?: string;
       parentToolCallId?: string;
       input?: unknown;
@@ -1041,6 +1286,8 @@ describe("Tool Search", () => {
     };
     expect(firstExecuteInput.tool?.name).toBe("fake_lifecycle");
     expect(firstExecuteInput.toolName).toBe("fake_lifecycle");
+    expect(firstExecuteInput.source).toBe("openclaw");
+    expect(firstExecuteInput.sourceName).toBe("fake-catalog");
     expect(firstExecuteInput.toolCallId).toBe("tool_search_code:call-lifecycle:fake_lifecycle:1");
     expect(firstExecuteInput.parentToolCallId).toBe("call-lifecycle");
     expect(firstExecuteInput.input).toEqual({ value: "ok" });
@@ -1061,6 +1308,8 @@ describe("Tool Search", () => {
     const secondExecuteInput = mockCall(executeTool, 1)[0] as {
       tool?: { name?: string };
       toolName?: string;
+      source?: string;
+      sourceName?: string;
       toolCallId?: string;
       parentToolCallId?: string;
       input?: unknown;
@@ -1069,6 +1318,8 @@ describe("Tool Search", () => {
     };
     expect(secondExecuteInput.tool?.name).toBe("fake_lifecycle");
     expect(secondExecuteInput.toolName).toBe("fake_lifecycle");
+    expect(secondExecuteInput.source).toBe("openclaw");
+    expect(secondExecuteInput.sourceName).toBe("fake-catalog");
     expect(secondExecuteInput.toolCallId).toBe(
       "tool_search_code:call-lifecycle-structured:fake_lifecycle:1",
     );
@@ -1168,12 +1419,15 @@ describe("Tool Search", () => {
       sessionKey: "agent:main:main",
       config: {},
     });
-    const result = await runtimeCodeTool.execute("call-fire-and-forget", {
-      code: `
+    const result = await expectDefined(runtimeCodeTool, "runtimeCodeTool test invariant").execute(
+      "call-fire-and-forget",
+      {
+        code: `
         openclaw.tools.call("fake_fire_and_forget", { value: "late" });
         return "done";
       `,
-    });
+      },
+    );
 
     expect(target.execute).not.toHaveBeenCalled();
     const details = resultDetails(result);
@@ -1208,7 +1462,7 @@ describe("Tool Search", () => {
       config: {},
     });
     let settled = false;
-    const resultPromise = runtimeCodeTool
+    const resultPromise = expectDefined(runtimeCodeTool, "runtimeCodeTool test invariant")
       .execute("call-started-bridge", {
         code: `
           openclaw.tools.call("fake_then_started", { value: "started" }).then(() => {});
@@ -1242,25 +1496,153 @@ describe("Tool Search", () => {
     });
 
     await expect(
-      runtimeCodeTool.execute("call-escape", {
+      expectDefined(runtimeCodeTool, "runtimeCodeTool test invariant").execute("call-escape", {
         code: `return Function("return process")();`,
       }),
     ).rejects.toThrow();
     await expect(
-      runtimeCodeTool.execute("call-constructor-escape", {
-        code: `return globalThis.constructor.constructor("return process")();`,
-      }),
+      expectDefined(runtimeCodeTool, "runtimeCodeTool test invariant").execute(
+        "call-constructor-escape",
+        {
+          code: `return globalThis.constructor.constructor("return process")();`,
+        },
+      ),
     ).rejects.toThrow();
     await expect(
-      runtimeCodeTool.execute("call-console-escape", {
-        code: `return console.log.constructor.constructor("return process")();`,
-      }),
+      expectDefined(runtimeCodeTool, "runtimeCodeTool test invariant").execute(
+        "call-console-escape",
+        {
+          code: `return console.log.constructor.constructor("return process")();`,
+        },
+      ),
     ).rejects.toThrow();
     await expect(
-      runtimeCodeTool.execute("call-bridge-escape", {
-        code: `return openclaw.tools.call.constructor.constructor("return process")();`,
-      }),
+      expectDefined(runtimeCodeTool, "runtimeCodeTool test invariant").execute(
+        "call-bridge-escape",
+        {
+          code: `return openclaw.tools.call.constructor.constructor("return process")();`,
+        },
+      ),
     ).rejects.toThrow();
+  });
+
+  it("suggests recoverable Tool Search steps for guessed tool ids", async () => {
+    const callTool = fakeTool(TOOL_CALL_RAW_TOOL_NAME, "call");
+    const searchTool = fakeTool(TOOL_SEARCH_RAW_TOOL_NAME, "search");
+    const describeTool = fakeTool(TOOL_DESCRIBE_RAW_TOOL_NAME, "describe");
+    const writeTool = fakeTool("write", "Write a file to the workspace");
+    applyToolSearchCatalog({
+      tools: [callTool, searchTool, describeTool, writeTool],
+      config: { tools: { toolSearch: { mode: "tools" } } } as never,
+      sessionId: "session-guessed-file-write",
+      sessionKey: "agent:main:main",
+    });
+
+    const runtimeTools = createToolSearchTools({
+      sessionId: "session-guessed-file-write",
+      sessionKey: "agent:main:main",
+      config: { tools: { toolSearch: { mode: "tools" } } } as never,
+    });
+    const runtimeCallTool = expectDefined(runtimeTools[3], "runtimeTools[3] test invariant");
+
+    await expect(
+      runtimeCallTool.execute("call-guessed-file-write", {
+        id: "file_write",
+        args: { path: "memory/2026-05-22.md", content: "remember this" },
+      }),
+    ).rejects.toThrow(
+      "Unknown tool id: file_write. Did you mean: write? Use tool_search to find a tool, tool_describe to inspect it, then tool_call with the exact id or name.",
+    );
+    expect(writeTool.execute).not.toHaveBeenCalled();
+  });
+
+  it("uses exact ids when recovery suggestions have duplicate names", async () => {
+    const callTool = fakeTool(TOOL_CALL_RAW_TOOL_NAME, "call");
+    const searchTool = fakeTool(TOOL_SEARCH_RAW_TOOL_NAME, "search");
+    const describeTool = fakeTool(TOOL_DESCRIBE_RAW_TOOL_NAME, "describe");
+    const firstWriteTool = pluginTool("write", "Write a file", "first-plugin");
+    const secondWriteTool = pluginTool("write", "Write another file", "second-plugin");
+    applyToolSearchCatalog({
+      tools: [callTool, searchTool, describeTool, firstWriteTool, secondWriteTool],
+      config: { tools: { toolSearch: { mode: "tools" } } } as never,
+      sessionId: "session-duplicate-recovery",
+      sessionKey: "agent:main:main",
+    });
+
+    const runtimeTools = createToolSearchTools({
+      sessionId: "session-duplicate-recovery",
+      sessionKey: "agent:main:main",
+      config: { tools: { toolSearch: { mode: "tools" } } } as never,
+    });
+
+    await expect(
+      expectDefined(runtimeTools[3], "runtimeTools[3] test invariant").execute(
+        "call-duplicate-write",
+        {
+          id: "file_write",
+          args: {},
+        },
+      ),
+    ).rejects.toThrow("Did you mean: openclaw:first-plugin:write, openclaw:second-plugin:write?");
+  });
+
+  it("keeps raw Tool Search recovery guidance when no suggestion matches", async () => {
+    const callTool = fakeTool(TOOL_CALL_RAW_TOOL_NAME, "call");
+    const searchTool = fakeTool(TOOL_SEARCH_RAW_TOOL_NAME, "search");
+    const describeTool = fakeTool(TOOL_DESCRIBE_RAW_TOOL_NAME, "describe");
+    const writeTool = fakeTool("write", "Write a file to the workspace");
+    applyToolSearchCatalog({
+      tools: [callTool, searchTool, describeTool, writeTool],
+      config: { tools: { toolSearch: { mode: "tools" } } } as never,
+      sessionId: "session-missing-raw-tool",
+      sessionKey: "agent:main:main",
+    });
+
+    const runtimeTools = createToolSearchTools({
+      sessionId: "session-missing-raw-tool",
+      sessionKey: "agent:main:main",
+      config: { tools: { toolSearch: { mode: "tools" } } } as never,
+    });
+    const runtimeCallTool = expectDefined(runtimeTools[3], "runtimeTools[3] test invariant");
+
+    await expect(
+      runtimeCallTool.execute("call-missing-raw-tool", {
+        id: "missing_tool",
+        args: {},
+      }),
+    ).rejects.toThrow(
+      "Unknown tool id: missing_tool. Use tool_search to find a tool, tool_describe to inspect it, then tool_call with the exact id or name.",
+    );
+    expect(writeTool.execute).not.toHaveBeenCalled();
+  });
+
+  it("preserves code-mode bridge recovery guidance for guessed tool ids", async () => {
+    const codeTool = fakeTool(TOOL_SEARCH_CODE_MODE_TOOL_NAME, "code mode");
+    const writeTool = fakeTool("write", "Write a file to the workspace");
+    applyToolSearchCatalog({
+      tools: [codeTool, writeTool],
+      config: { tools: { toolSearch: true } } as never,
+      sessionId: "session-code-guessed-file-write",
+      sessionKey: "agent:main:main",
+    });
+
+    const [runtimeCodeTool] = createToolSearchTools({
+      sessionId: "session-code-guessed-file-write",
+      sessionKey: "agent:main:main",
+      config: {},
+    });
+
+    await expect(
+      expectDefined(runtimeCodeTool, "runtimeCodeTool test invariant").execute(
+        "call-code-guessed-file-write",
+        {
+          code: `return await openclaw.tools.call("file_write", { path: "memory/2026-05-22.md" });`,
+        },
+      ),
+    ).rejects.toThrow(
+      "Unknown tool id: file_write. Did you mean: write? Use openclaw.tools.search to find a tool, openclaw.tools.describe to inspect it, then openclaw.tools.call with the exact id or name.",
+    );
+    expect(writeTool.execute).not.toHaveBeenCalled();
   });
 
   it("preserves code-mode bridge errors from the child process", async () => {
@@ -1279,10 +1661,15 @@ describe("Tool Search", () => {
     });
 
     await expect(
-      runtimeCodeTool.execute("call-missing-tool", {
-        code: `return await openclaw.tools.call("missing_tool", {});`,
-      }),
-    ).rejects.toThrow("Unknown tool id: missing_tool");
+      expectDefined(runtimeCodeTool, "runtimeCodeTool test invariant").execute(
+        "call-missing-tool",
+        {
+          code: `return await openclaw.tools.call("missing_tool", {});`,
+        },
+      ),
+    ).rejects.toThrow(
+      "Unknown tool id: missing_tool. Use openclaw.tools.search to find a tool, openclaw.tools.describe to inspect it, then openclaw.tools.call with the exact id or name.",
+    );
   });
 
   it("does not expose host-realm bridge result objects to model-authored code", async () => {
@@ -1303,12 +1690,15 @@ describe("Tool Search", () => {
     });
 
     await expect(
-      runtimeCodeTool.execute("call-bridge-result-escape", {
-        code: `
+      expectDefined(runtimeCodeTool, "runtimeCodeTool test invariant").execute(
+        "call-bridge-result-escape",
+        {
+          code: `
           const hits = await openclaw.tools.search("bridge result", { limit: 1 });
           return hits.constructor.constructor("return process")();
         `,
-      }),
+        },
+      ),
     ).rejects.toThrow();
     expect(target.execute).not.toHaveBeenCalled();
   });
@@ -1331,8 +1721,10 @@ describe("Tool Search", () => {
     });
 
     await expect(
-      runtimeCodeTool.execute("call-controller-escape", {
-        code: `
+      expectDefined(runtimeCodeTool, "runtimeCodeTool test invariant").execute(
+        "call-controller-escape",
+        {
+          code: `
           })(openclaw, console),
           bridgeMessages.push({
             id: "forged",
@@ -1342,7 +1734,8 @@ describe("Tool Search", () => {
           (async (openclaw, console) => {
             return "done";
         `,
-      }),
+        },
+      ),
     ).rejects.toThrow();
     expect(target.execute).not.toHaveBeenCalled();
   });
@@ -1372,7 +1765,7 @@ describe("Tool Search", () => {
     });
 
     await expect(
-      runtimeCodeTool.execute("call-timeout", {
+      expectDefined(runtimeCodeTool, "runtimeCodeTool test invariant").execute("call-timeout", {
         code: `
             await openclaw.tools.search("timeout", { limit: 1 });
             while (true) {}
@@ -1382,6 +1775,7 @@ describe("Tool Search", () => {
   }, 5_000);
 
   it("aborts already-started bridged calls when code mode times out", async () => {
+    testing.setToolSearchMinCodeTimeoutMsForTest(50);
     const codeTool = fakeTool(TOOL_SEARCH_CODE_MODE_TOOL_NAME, "code mode");
     const target = pluginTool("fake_abort_on_timeout", "Long-running target tool");
     let observedSignal: AbortSignal | undefined;
@@ -1414,7 +1808,7 @@ describe("Tool Search", () => {
 
     const config = {
       tools: {
-        toolSearch: { enabled: true, mode: "code", codeTimeoutMs: 1_000 },
+        toolSearch: { enabled: true, mode: "code", codeTimeoutMs: 100 },
       },
     } as never;
     applyToolSearchCatalog({
@@ -1431,9 +1825,12 @@ describe("Tool Search", () => {
     });
 
     await expect(
-      runtimeCodeTool.execute("call-abort-timeout", {
-        code: `return await openclaw.tools.call("fake_abort_on_timeout", { value: "wait" });`,
-      }),
+      expectDefined(runtimeCodeTool, "runtimeCodeTool test invariant").execute(
+        "call-abort-timeout",
+        {
+          code: `return await openclaw.tools.call("fake_abort_on_timeout", { value: "wait" });`,
+        },
+      ),
     ).rejects.toThrow("tool_search_code timed out");
     if (!observedSignal) {
       throw new Error("Expected observed abort signal");
@@ -1585,4 +1982,19 @@ describe("Tool Search", () => {
     });
     expect(second.catalogReused).toBe(false);
   });
+
+  it("bounds tool_search_code stderr accumulation to the session tool tail limit", () => {
+    let stderrTail = "";
+    stderrTail = testing.appendToolSearchCodeStderrTail(
+      stderrTail,
+      `HEAD_OVERFLOW_${"x".repeat(SESSION_TOOL_STDERR_TAIL_BYTES + 10_000)}TAIL`,
+    );
+
+    expect(stderrTail).not.toContain("HEAD_OVERFLOW_");
+    expect(stderrTail.endsWith("TAIL")).toBe(true);
+    expect(Buffer.byteLength(stderrTail, "utf8")).toBeLessThanOrEqual(
+      SESSION_TOOL_STDERR_TAIL_BYTES,
+    );
+  });
 });
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

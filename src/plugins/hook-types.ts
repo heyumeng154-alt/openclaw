@@ -19,6 +19,7 @@ import type {
   PluginHookBeforePromptBuildResult,
 } from "./hook-before-agent-start.types.js";
 import type { PluginHookBeforeToolCallResult } from "./hook-before-tool-call-result.js";
+import type { PluginHookChannelContext } from "./hook-channel-context.types.js";
 import type { InputGateDecision } from "./hook-decision-types.js";
 import type {
   PluginHookInboundClaimContext,
@@ -39,7 +40,6 @@ import type {
 
 export type {
   PluginHookBeforeAgentStartEvent,
-  PluginHookBeforeAgentStartOverrideResult,
   PluginHookBeforeAgentStartResult,
   PluginHookBeforeModelResolveAttachment,
   PluginHookBeforeModelResolveEvent,
@@ -47,10 +47,12 @@ export type {
   PluginHookBeforePromptBuildEvent,
   PluginHookBeforePromptBuildResult,
 } from "./hook-before-agent-start.types.js";
-export {
-  PLUGIN_PROMPT_MUTATION_RESULT_FIELDS,
-  stripPromptMutationFieldsFromLegacyHookResult,
-} from "./hook-before-agent-start.types.js";
+export type {
+  PluginHookChannelChatContext,
+  PluginHookChannelContext,
+  PluginHookChannelSenderContext,
+} from "./hook-channel-context.types.js";
+export { stripPromptMutationFieldsFromLegacyHookResult } from "./hook-before-agent-start.types.js";
 export type {
   PluginAgentTurnPrepareEvent,
   PluginAgentTurnPrepareResult,
@@ -88,6 +90,7 @@ export type PluginHookName =
   | "after_compaction"
   | "before_reset"
   | "inbound_claim"
+  | "channel_pairing_requested"
   | "message_received"
   | "message_sending"
   | "reply_payload_sending"
@@ -112,6 +115,7 @@ export type PluginHookName =
   | "gateway_start"
   | "gateway_stop"
   | "heartbeat_prompt_contribution"
+  | "cron_reconciled"
   | "cron_changed"
   | "before_dispatch"
   | "reply_dispatch"
@@ -119,7 +123,7 @@ export type PluginHookName =
   | "before_agent_run"
   | "resolve_exec_env";
 
-export const PLUGIN_HOOK_NAMES = [
+const PLUGIN_HOOK_NAMES = [
   "before_model_resolve",
   "agent_turn_prepare",
   "before_prompt_build",
@@ -135,6 +139,7 @@ export const PLUGIN_HOOK_NAMES = [
   "after_compaction",
   "before_reset",
   "inbound_claim",
+  "channel_pairing_requested",
   "message_received",
   "message_sending",
   "reply_payload_sending",
@@ -153,6 +158,7 @@ export const PLUGIN_HOOK_NAMES = [
   "gateway_start",
   "gateway_stop",
   "heartbeat_prompt_contribution",
+  "cron_reconciled",
   "cron_changed",
   "before_dispatch",
   "reply_dispatch",
@@ -166,12 +172,31 @@ type AssertAllPluginHookNamesListed = MissingPluginHookNames extends never ? tru
 const assertAllPluginHookNamesListed: AssertAllPluginHookNamesListed = true;
 void assertAllPluginHookNamesListed;
 
-export type DeprecatedPluginHookName = "subagent_spawning" | "deactivate";
+type DeprecatedPluginHookName = "subagent_spawning" | "deactivate";
 
-export type PluginHookDeprecation = {
+type PluginHookDeprecation = {
   replacement: string;
   reason: string;
   removeAfter?: string;
+};
+
+type PluginHookChannelPairingRequestedEvent = {
+  /** Channel that created the pending pairing request. */
+  channel: string;
+  /** Provider account ID for multi-account channel setups. */
+  accountId?: string;
+  /** Channel-scoped sender ID awaiting operator approval. */
+  senderId: string;
+  /** Short-lived code accepted by `openclaw pairing approve`. */
+  code: string;
+  /** Sender-supplied channel metadata for operator notification/audit. Treat as untrusted. */
+  metadata?: Record<string, string | undefined>;
+};
+
+type PluginHookChannelPairingContext = {
+  channelId: string;
+  accountId?: string;
+  senderId: string;
 };
 
 export const DEPRECATED_PLUGIN_HOOKS = {
@@ -188,7 +213,7 @@ export const DEPRECATED_PLUGIN_HOOKS = {
   },
 } as const satisfies Record<DeprecatedPluginHookName, PluginHookDeprecation>;
 
-export const DEPRECATED_PLUGIN_HOOK_NAMES = Object.keys(
+const DEPRECATED_PLUGIN_HOOK_NAMES = Object.keys(
   DEPRECATED_PLUGIN_HOOKS,
 ) as DeprecatedPluginHookName[];
 
@@ -203,21 +228,19 @@ const pluginHookNameSet = new Set<PluginHookName>(PLUGIN_HOOK_NAMES);
 export const isPluginHookName = (hookName: unknown): hookName is PluginHookName =>
   typeof hookName === "string" && pluginHookNameSet.has(hookName as PluginHookName);
 
-export const PROMPT_INJECTION_HOOK_NAMES = [
+const PROMPT_INJECTION_HOOK_NAMES = [
   "agent_turn_prepare",
   "before_prompt_build",
   "before_agent_start",
   "heartbeat_prompt_contribution",
 ] as const satisfies readonly PluginHookName[];
 
-export type PromptInjectionHookName = (typeof PROMPT_INJECTION_HOOK_NAMES)[number];
-
 const promptInjectionHookNameSet = new Set<PluginHookName>(PROMPT_INJECTION_HOOK_NAMES);
 
 export const isPromptInjectionHookName = (hookName: PluginHookName): boolean =>
   promptInjectionHookNameSet.has(hookName);
 
-export const CONVERSATION_HOOK_NAMES = [
+const CONVERSATION_HOOK_NAMES = [
   "before_model_resolve",
   "before_agent_reply",
   "llm_input",
@@ -226,8 +249,6 @@ export const CONVERSATION_HOOK_NAMES = [
   "agent_end",
   "before_agent_run",
 ] as const satisfies readonly PluginHookName[];
-
-export type ConversationHookName = (typeof CONVERSATION_HOOK_NAMES)[number];
 
 const conversationHookNameSet = new Set<PluginHookName>(CONVERSATION_HOOK_NAMES);
 
@@ -259,6 +280,13 @@ export type PluginHookAgentContext = {
   contextWindowSource?: PluginHookContextWindowSource;
   /** Native/configured reference window when a lower cap wins. */
   contextWindowReferenceTokens?: number;
+  /**
+   * @deprecated Core does not populate cross-app sender ids. Channel plugins
+   * should expose channel-specific identities by augmenting `channelContext.sender`.
+   */
+  senderExternalId?: string;
+  /** Channel-owned sender/chat details. Plugins may augment the nested interfaces. */
+  channelContext?: PluginHookChannelContext;
 };
 
 export type PluginHookContextWindowSource =
@@ -289,7 +317,7 @@ export type PluginHookLlmInputEvent = {
   tools?: unknown[];
 };
 
-export type PluginHookModelCallBaseEvent = {
+type PluginHookModelCallBaseEvent = {
   runId: string;
   callId: string;
   sessionKey?: string;
@@ -420,6 +448,8 @@ export type PluginHookAfterCompactionEvent = {
   tokenCount?: number;
   compactedCount: number;
   sessionFile?: string;
+  /** Physical session generation replaced by this compaction, when it rotated. */
+  previousSessionId?: string;
 };
 
 export type PluginHookInboundClaimResult = {
@@ -715,7 +745,7 @@ export type PluginHookSubagentContext = {
   requesterSessionKey?: string;
 };
 
-export type PluginHookSubagentTargetKind = "subagent" | "acp";
+type PluginHookSubagentTargetKind = "subagent" | "acp";
 
 type PluginHookSubagentSpawnBase = {
   childSessionKey: string;
@@ -824,6 +854,11 @@ export type PluginHookGatewayContext = {
   getCron?: () => PluginHookGatewayCronService | undefined;
 };
 
+export type PluginHookCronReconciledContext = PluginHookGatewayContext & {
+  /** Aborts when this exact scheduler snapshot is superseded or the Gateway closes. */
+  abortSignal: AbortSignal;
+};
+
 export type PluginHookGatewayStartEvent = {
   port: number;
 };
@@ -832,15 +867,20 @@ export type PluginHookGatewayStopEvent = {
   reason?: string;
 };
 
-export type PluginHookGatewayCronRunStatus = "ok" | "error" | "skipped";
+export type PluginHookCronReconciledEvent = {
+  reason: "startup" | "reload";
+  enabled: boolean;
+};
 
-export type PluginHookGatewayCronDeliveryStatus =
+type PluginHookGatewayCronRunStatus = "ok" | "error" | "skipped";
+
+type PluginHookGatewayCronDeliveryStatus =
   | "not-requested"
   | "delivered"
   | "not-delivered"
   | "unknown";
 
-export type PluginHookGatewayCronJobState = {
+type PluginHookGatewayCronJobState = {
   nextRunAtMs?: number;
   runningAtMs?: number;
   lastRunAtMs?: number;
@@ -877,6 +917,11 @@ export type PluginHookGatewayCronJob = {
         kind: "every";
         everyMs?: number;
         anchorMs?: number;
+      }
+    | {
+        kind: "on-exit";
+        command?: string;
+        cwd?: string;
       };
   sessionTarget?: string;
   wakeMode?: string;
@@ -890,7 +935,7 @@ export type PluginHookGatewayCronJob = {
 };
 
 export type PluginHookCronChangedEvent = {
-  action: "added" | "updated" | "removed" | "started" | "finished";
+  action: "added" | "updated" | "removed" | "started" | "finished" | "scheduled";
   jobId: string;
   job?: PluginHookGatewayCronJob;
   /** Top-level session target for downstream routing (mirrors job.sessionTarget). */
@@ -913,7 +958,7 @@ export type PluginHookCronChangedEvent = {
   provider?: string;
 };
 
-export type PluginHookGatewayCronCreateInput = {
+type PluginHookGatewayCronCreateInput = {
   name: string;
   description: string;
   enabled: boolean;
@@ -930,9 +975,9 @@ export type PluginHookGatewayCronCreateInput = {
   };
 };
 
-export type PluginHookGatewayCronUpdateInput = Partial<PluginHookGatewayCronCreateInput>;
+type PluginHookGatewayCronUpdateInput = Partial<PluginHookGatewayCronCreateInput>;
 
-export type PluginHookGatewayCronRemoveResult = {
+type PluginHookGatewayCronRemoveResult = {
   removed?: boolean;
 };
 
@@ -944,7 +989,7 @@ export type PluginHookGatewayCronService = {
 };
 
 export type PluginInstallTargetType = "skill" | "plugin";
-export type PluginInstallRequestKind =
+type PluginInstallRequestKind =
   | "skill-install"
   | "plugin-dir"
   | "plugin-archive"
@@ -953,7 +998,7 @@ export type PluginInstallRequestKind =
   | "plugin-git";
 export type PluginInstallSourcePathKind = "file" | "directory";
 
-export type PluginInstallFinding = {
+type PluginInstallFinding = {
   ruleId: string;
   severity: "info" | "warn" | "critical";
   file: string;
@@ -977,7 +1022,7 @@ export type PluginHookBeforeInstallBuiltinScan = {
   error?: string;
 };
 
-export type PluginHookBeforeInstallSkillInstallSpec = {
+type PluginHookBeforeInstallSkillInstallSpec = {
   id?: string;
   kind: "brew" | "node" | "go" | "uv" | "download";
   label?: string;
@@ -1054,7 +1099,7 @@ export type PluginHookBeforeAgentRunEvent = {
 };
 
 /** Result type for before_agent_run. Returns pass/block or void (= pass). */
-export type PluginHookBeforeAgentRunResult = InputGateDecision | void;
+type PluginHookBeforeAgentRunResult = InputGateDecision | void;
 
 export type PluginHookResolveExecEnvEvent = {
   sessionKey?: string;
@@ -1126,6 +1171,10 @@ export type PluginHookHandlerMap = {
     event: PluginHookInboundClaimEvent,
     ctx: PluginHookInboundClaimContext,
   ) => Promise<PluginHookInboundClaimResult | void> | PluginHookInboundClaimResult | void;
+  channel_pairing_requested: (
+    event: PluginHookChannelPairingRequestedEvent,
+    ctx: PluginHookChannelPairingContext,
+  ) => Promise<void> | void;
   before_dispatch: (
     event: PluginHookBeforeDispatchEvent,
     ctx: PluginHookBeforeDispatchContext,
@@ -1229,6 +1278,10 @@ export type PluginHookHandlerMap = {
     | Promise<PluginHeartbeatPromptContributionResult | void>
     | PluginHeartbeatPromptContributionResult
     | void;
+  cron_reconciled: (
+    event: PluginHookCronReconciledEvent,
+    ctx: PluginHookCronReconciledContext,
+  ) => Promise<void> | void;
   cron_changed: (
     event: PluginHookCronChangedEvent,
     ctx: PluginHookGatewayContext,
@@ -1255,3 +1308,4 @@ export type PluginHookRegistration<K extends PluginHookName = PluginHookName> = 
   timeoutMs?: number;
   source: string;
 };
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

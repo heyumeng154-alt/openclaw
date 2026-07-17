@@ -1,7 +1,10 @@
 // Outbound payload planning normalizes reply payloads into sendable text,
 // media, presentation, interactive, and mirror projections.
 import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-payload";
-import { parseReplyDirectives } from "../../auto-reply/reply/reply-directives.js";
+import {
+  mergeReactionDirectiveChannelData,
+  parseReplyDirectives,
+} from "../../auto-reply/reply/reply-directives.js";
 import {
   formatBtwTextForExternalDelivery,
   isRenderablePayload,
@@ -10,13 +13,15 @@ import {
 import type { ReplyPayload } from "../../auto-reply/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
-  hasInteractiveReplyBlocks,
+  hasLegacyInteractiveReplyBlocks,
   hasMessagePresentationBlocks,
   hasReplyChannelData,
   hasReplyPayloadContent,
-  normalizeInteractiveReply,
+  normalizeLegacyInteractiveReply,
   normalizeMessagePresentation,
-  type InteractiveReply,
+  renderMessagePresentationChartFallbackText,
+  renderMessagePresentationTableFallbackText,
+  type LegacyInteractiveReply,
   type MessagePresentation,
   type ReplyPayloadDelivery,
 } from "../../interactive/payload.js";
@@ -30,8 +35,9 @@ export type NormalizedOutboundPayload = {
   audioAsVoice?: boolean;
   presentation?: MessagePresentation;
   delivery?: ReplyPayloadDelivery;
-  interactive?: InteractiveReply;
+  interactive?: LegacyInteractiveReply;
   channelData?: Record<string, unknown>;
+  location?: ReplyPayload["location"];
   /** Hook-only content for audio-only TTS payloads. Never used as channel text/caption. */
   hookContent?: string;
 };
@@ -44,8 +50,9 @@ export type OutboundPayloadJson = {
   audioAsVoice?: boolean;
   presentation?: MessagePresentation;
   delivery?: ReplyPayloadDelivery;
-  interactive?: InteractiveReply;
+  interactive?: LegacyInteractiveReply;
   channelData?: Record<string, unknown>;
+  location?: ReplyPayload["location"];
 };
 
 /** Prepared payload entry that keeps source indexing plus reusable projections. */
@@ -67,12 +74,14 @@ type OutboundPayloadPlanContext = {
 };
 
 /** Text/media projection used to mirror outbound replies into session state. */
-export type OutboundPayloadMirror = {
+type OutboundPayloadMirror = {
   text: string;
   mediaUrls: string[];
 };
 
-type MirrorTextBlock = MessagePresentation["blocks"][number] | InteractiveReply["blocks"][number];
+type MirrorTextBlock =
+  | MessagePresentation["blocks"][number]
+  | LegacyInteractiveReply["blocks"][number];
 
 function collectBlockMirrorText(
   blocks: readonly MirrorTextBlock[],
@@ -93,6 +102,14 @@ function collectBlockMirrorText(
           lines.push(button.label.trim());
         }
       }
+      continue;
+    }
+    if (block.type === "chart") {
+      lines.push(renderMessagePresentationChartFallbackText(block));
+      continue;
+    }
+    if (block.type === "table") {
+      lines.push(renderMessagePresentationTableFallbackText(block));
       continue;
     }
     if (block.type === "select") {
@@ -121,7 +138,7 @@ function collectPresentationMirrorText(presentation: MessagePresentation | undef
   return lines;
 }
 
-function collectInteractiveMirrorText(interactive: InteractiveReply | undefined): string[] {
+function collectInteractiveMirrorText(interactive: LegacyInteractiveReply | undefined): string[] {
   if (!interactive) {
     return [];
   }
@@ -130,11 +147,16 @@ function collectInteractiveMirrorText(interactive: InteractiveReply | undefined)
 
 function resolveOutboundMirrorText(entry: OutboundPayloadPlan): string {
   const text = entry.parts.text.trim() ? entry.parts.text : entry.payload.text;
-  if (text?.trim()) {
-    return text;
-  }
   const presentation = normalizeMessagePresentation(entry.payload.presentation);
-  const interactive = normalizeInteractiveReply(entry.payload.interactive);
+  if (text?.trim()) {
+    const structuredDataText = presentation
+      ? collectBlockMirrorText(
+          presentation.blocks.filter((block) => block.type === "chart" || block.type === "table"),
+        )
+      : [];
+    return [text, ...structuredDataText].join("\n");
+  }
+  const interactive = normalizeLegacyInteractiveReply(entry.payload.interactive);
   return [
     ...collectPresentationMirrorText(presentation),
     ...collectInteractiveMirrorText(interactive),
@@ -211,7 +233,7 @@ function createOutboundPayloadPlanEntry(
     extractMarkdownImages: context.extractMarkdownImages,
   });
   const explicitMediaUrls = payload.mediaUrls ?? parsed.mediaUrls;
-  const explicitMediaUrl = payload.mediaUrl ?? parsed.mediaUrl;
+  const explicitMediaUrl = payload.mediaUrl ?? parsed.mediaUrls?.[0];
   const mergedMedia = mergeMediaUrls(
     explicitMediaUrls,
     explicitMediaUrl ? [explicitMediaUrl] : undefined,
@@ -226,6 +248,7 @@ function createOutboundPayloadPlanEntry(
   const isSilent = strippedParsed.isSilent && mergedMedia.length === 0;
   const hasMultipleMedia = (explicitMediaUrls?.length ?? 0) > 1;
   const resolvedMediaUrl = hasMultipleMedia ? undefined : explicitMediaUrl;
+  const channelData = mergeReactionDirectiveChannelData(payload.channelData, parsed.reaction);
   const normalizedPayload: ReplyPayload = {
     ...payload,
     text:
@@ -239,6 +262,7 @@ function createOutboundPayloadPlanEntry(
     replyToTag: payload.replyToTag || parsed.replyToTag,
     replyToCurrent: payload.replyToCurrent || parsed.replyToCurrent,
     audioAsVoice: Boolean(payload.audioAsVoice || parsed.audioAsVoice),
+    ...(channelData ? { channelData } : {}),
   };
   if (!isRenderablePayload(normalizedPayload) && !isSilent) {
     return null;
@@ -247,7 +271,7 @@ function createOutboundPayloadPlanEntry(
   return {
     payload: normalizedPayload,
     hasPresentation: hasMessagePresentationBlocks(normalizedPayload.presentation),
-    hasInteractive: hasInteractiveReplyBlocks(normalizedPayload.interactive),
+    hasInteractive: hasLegacyInteractiveReplyBlocks(normalizedPayload.interactive),
     hasChannelData,
     isSilent,
   };
@@ -306,7 +330,10 @@ export function projectOutboundPayloadPlanForOutbound(
     if (
       !hasReplyPayloadContent(
         { ...payload, text, mediaUrls: entry.parts.mediaUrls },
-        { hasChannelData: entry.hasChannelData },
+        {
+          hasChannelData: entry.hasChannelData,
+          extraContent: payload.location != null,
+        },
       )
     ) {
       continue;
@@ -319,6 +346,7 @@ export function projectOutboundPayloadPlanForOutbound(
       ...(payload.delivery ? { delivery: payload.delivery } : {}),
       ...(entry.hasInteractive ? { interactive: payload.interactive } : {}),
       ...(entry.hasChannelData ? { channelData: payload.channelData } : {}),
+      ...(payload.location ? { location: payload.location } : {}),
     });
   }
   return normalizedPayloads;
@@ -340,6 +368,7 @@ export function projectOutboundPayloadPlanForJson(
       delivery: payload.delivery,
       interactive: payload.interactive,
       channelData: payload.channelData,
+      ...(payload.location ? { location: payload.location } : {}),
     });
   }
   return normalized;
@@ -377,6 +406,7 @@ export function summarizeOutboundPayloadForTransport(
     delivery: payload.delivery,
     interactive: payload.interactive,
     channelData: payload.channelData,
+    ...(payload.location ? { location: payload.location } : {}),
     ...(text || !spokenText ? {} : { hookContent: spokenText }),
   };
 }
@@ -386,13 +416,6 @@ export function normalizeReplyPayloadsForDelivery(
   payloads: readonly ReplyPayload[],
 ): ReplyPayload[] {
   return projectOutboundPayloadPlanForDelivery(createOutboundPayloadPlan(payloads));
-}
-
-/** Normalizes reply payloads into runtime outbound transport payloads. */
-export function normalizeOutboundPayloads(
-  payloads: readonly ReplyPayload[],
-): NormalizedOutboundPayload[] {
-  return projectOutboundPayloadPlanForOutbound(createOutboundPayloadPlan(payloads));
 }
 
 /** Normalizes reply payloads into JSON-safe outbound envelope payloads. */

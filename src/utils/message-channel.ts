@@ -8,7 +8,7 @@ import {
   normalizeGatewayClientName,
 } from "../../packages/gateway-protocol/src/client-info.js";
 import { listBundledChannelCatalogEntries } from "../channels/bundled-channel-catalog-read.js";
-import { getChatChannelMeta } from "../channels/chat-meta.js";
+import { findChatChannelMeta } from "../channels/chat-meta.js";
 import { getRegisteredChannelPluginMeta, normalizeChatChannelId } from "../channels/registry.js";
 export {
   isDeliverableMessageChannel,
@@ -22,14 +22,10 @@ export {
 } from "./message-channel-normalize.js";
 export {
   INTERNAL_MESSAGE_CHANNEL,
-  INTERNAL_NON_DELIVERY_CHANNELS,
   isInternalNonDeliveryChannel,
-  type InternalMessageChannel,
+  isNativeApprovalChannel,
 } from "./message-channel-constants.js";
-import {
-  INTERNAL_MESSAGE_CHANNEL,
-  type InternalMessageChannel,
-} from "./message-channel-constants.js";
+import { INTERNAL_MESSAGE_CHANNEL } from "./message-channel-constants.js";
 import { normalizeMessageChannel } from "./message-channel-normalize.js";
 
 /**
@@ -40,7 +36,6 @@ import { normalizeMessageChannel } from "./message-channel-normalize.js";
  */
 export { GATEWAY_CLIENT_NAMES, GATEWAY_CLIENT_MODES };
 export type { GatewayClientName, GatewayClientMode };
-export { normalizeGatewayClientName, normalizeGatewayClientMode };
 
 type GatewayClientInfoLike = {
   mode?: string | null;
@@ -50,6 +45,20 @@ type GatewayClientInfoLike = {
 /** Return whether a Gateway client is the CLI transport. */
 export function isGatewayCliClient(client?: GatewayClientInfoLike | null): boolean {
   return normalizeGatewayClientMode(client?.mode) === GATEWAY_CLIENT_MODES.CLI;
+}
+
+/**
+ * Return whether a Gateway client is an ephemeral control-plane connection.
+ * Test-mode clients stay excluded from this list: suites use them as stand-ins
+ * for real clients and assert presence propagation through the full pipeline.
+ */
+export function isEphemeralGatewayClient(client?: GatewayClientInfoLike | null): boolean {
+  const mode = normalizeGatewayClientMode(client?.mode);
+  return (
+    mode === GATEWAY_CLIENT_MODES.CLI ||
+    mode === GATEWAY_CLIENT_MODES.BACKEND ||
+    mode === GATEWAY_CLIENT_MODES.PROBE
+  );
 }
 
 /** Return whether a client is one of the operator UI clients. */
@@ -65,7 +74,9 @@ export function isBrowserOperatorUiClient(client?: GatewayClientInfoLike | null)
 }
 
 /** Return whether a raw channel id resolves to OpenClaw's internal channel. */
-export function isInternalMessageChannel(raw?: string | null): raw is InternalMessageChannel {
+export function isInternalMessageChannel(
+  raw?: string | null,
+): raw is typeof INTERNAL_MESSAGE_CHANNEL {
   return normalizeMessageChannel(raw) === INTERNAL_MESSAGE_CHANNEL;
 }
 
@@ -89,7 +100,7 @@ export function isMarkdownCapableMessageChannel(raw?: string | null): boolean {
   }
   const builtInChannel = normalizeChatChannelId(channel);
   if (builtInChannel) {
-    const builtInMeta = getChatChannelMeta(builtInChannel);
+    const builtInMeta = findChatChannelMeta(builtInChannel);
     if (builtInMeta) {
       return builtInMeta.markdownCapable === true;
     }

@@ -6,10 +6,10 @@ export type ContextPruningToolMatch = {
   allow?: string[];
   deny?: string[];
 };
-export type ContextPruningMode = "off" | "cache-ttl";
+type ContextPruningMode = "off" | "cache-ttl";
 
 /** Raw context-pruning config as read from agent settings. */
-export type ContextPruningConfig = {
+type ContextPruningConfig = {
   mode?: ContextPruningMode;
   /** TTL to consider cache expired (duration string, default unit: minutes). */
   ttl?: string;
@@ -49,7 +49,7 @@ export type EffectiveContextPruningSettings = {
   };
 };
 
-export const DEFAULT_CONTEXT_PRUNING_SETTINGS: EffectiveContextPruningSettings = {
+const DEFAULT_CONTEXT_PRUNING_SETTINGS: EffectiveContextPruningSettings = {
   mode: "cache-ttl",
   ttlMs: 5 * 60 * 1000,
   keepLastAssistants: 3,

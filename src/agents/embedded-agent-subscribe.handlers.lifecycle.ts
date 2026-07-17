@@ -4,10 +4,10 @@
 import { createInlineCodeState } from "../../packages/markdown-core/src/code-spans.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import { hasAcceptedSessionSpawn } from "./accepted-session-spawn.js";
+import { sanitizeForConsole } from "./console-sanitize.js";
 import {
   buildApiErrorObservationFields,
   buildTextObservationFields,
-  sanitizeForConsole,
   shouldSuppressRawErrorConsoleSuffix,
 } from "./embedded-agent-error-observation.js";
 import {
@@ -20,6 +20,7 @@ import {
   hasAttemptTerminalState,
   isIncompleteTerminalAssistantTurn,
 } from "./embedded-agent-runner/run/incomplete-turn.js";
+import { runBestEffortCallback } from "./embedded-agent-subscribe.callback.js";
 import {
   consumePendingToolMediaReply,
   hasAssistantVisibleReply,
@@ -28,6 +29,7 @@ import type { EmbeddedAgentSubscribeContext } from "./embedded-agent-subscribe.h
 import { isPromiseLike } from "./embedded-agent-subscribe.promise.js";
 import { isAssistantMessage } from "./embedded-agent-utils.js";
 import type { AgentSessionEvent } from "./sessions/index.js";
+import { summarizeToolValidationError } from "./tool-error-summary.js";
 
 export {
   handleCompactionEnd,
@@ -50,9 +52,14 @@ export function handleAgentStart(ctx: EmbeddedAgentSubscribeContext) {
       startedAt: Date.now(),
     },
   });
-  void ctx.params.onAgentEvent?.({
-    stream: "lifecycle",
-    data: { phase: "start" },
+  runBestEffortCallback({
+    label: "lifecycle agent event",
+    log: ctx.log,
+    callback: () =>
+      ctx.params.onAgentEvent?.({
+        stream: "lifecycle",
+        data: { phase: "start" },
+      }),
   });
 }
 
@@ -175,6 +182,12 @@ export function handleAgentEnd(
       typeof ctx.state.terminalAborted === "boolean"
         ? ctx.state.terminalAborted
         : ctx.params.isTerminalAborted?.();
+    // Aborted validation loops lose their final tool result. Preserve only the
+    // argument-free validator summary; arbitrary tool errors can contain secrets.
+    const toolErrorSummary =
+      terminalAborted === true && ctx.state.lastToolError
+        ? summarizeToolValidationError(ctx.state.lastToolError)
+        : undefined;
     const terminalMeta = {
       ...(terminalStopReason ? { stopReason: terminalStopReason } : {}),
       ...(ctx.state.yielded === true ? { yielded: true } : {}),
@@ -183,39 +196,11 @@ export function handleAgentEnd(
         ? { providerStarted: ctx.state.providerStarted }
         : {}),
       ...(typeof terminalAborted === "boolean" ? { aborted: terminalAborted } : {}),
+      ...(toolErrorSummary ? { toolErrorSummary } : {}),
     };
-    if (isError) {
-      emitAgentEvent({
-        runId: ctx.params.runId,
-        ...(ctx.params.sessionKey ? { sessionKey: ctx.params.sessionKey } : {}),
-        ...(ctx.params.sessionId ? { sessionId: ctx.params.sessionId } : {}),
-        ...(ctx.params.agentId ? { agentId: ctx.params.agentId } : {}),
-        ...(ctx.params.lifecycleGeneration
-          ? { lifecycleGeneration: ctx.params.lifecycleGeneration }
-          : {}),
-        stream: "lifecycle",
-        data: {
-          phase: "error",
-          error: lifecycleErrorText ?? GENERIC_ASSISTANT_ERROR_TEXT,
-          ...terminalMeta,
-          ...(livenessState ? { livenessState } : {}),
-          ...(replayInvalid ? { replayInvalid } : {}),
-          endedAt: Date.now(),
-        },
-      });
-      void ctx.params.onAgentEvent?.({
-        stream: "lifecycle",
-        data: {
-          phase: "error",
-          error: lifecycleErrorText ?? GENERIC_ASSISTANT_ERROR_TEXT,
-          ...terminalMeta,
-          ...(livenessState ? { livenessState } : {}),
-          ...(replayInvalid ? { replayInvalid } : {}),
-        },
-      });
-      return;
-    }
-    const successPhase = ctx.params.terminalLifecyclePhase ?? "end";
+    const phase =
+      ctx.params.terminalLifecyclePhase === "finishing" ? "finishing" : isError ? "error" : "end";
+    const errorData = isError ? { error: lifecycleErrorText ?? GENERIC_ASSISTANT_ERROR_TEXT } : {};
     emitAgentEvent({
       runId: ctx.params.runId,
       ...(ctx.params.sessionKey ? { sessionKey: ctx.params.sessionKey } : {}),
@@ -226,21 +211,28 @@ export function handleAgentEnd(
         : {}),
       stream: "lifecycle",
       data: {
-        phase: successPhase,
+        phase,
+        ...errorData,
         ...terminalMeta,
         ...(livenessState ? { livenessState } : {}),
         ...(replayInvalid ? { replayInvalid } : {}),
         endedAt: Date.now(),
       },
     });
-    void ctx.params.onAgentEvent?.({
-      stream: "lifecycle",
-      data: {
-        phase: successPhase,
-        ...terminalMeta,
-        ...(livenessState ? { livenessState } : {}),
-        ...(replayInvalid ? { replayInvalid } : {}),
-      },
+    runBestEffortCallback({
+      label: "lifecycle agent event",
+      log: ctx.log,
+      callback: () =>
+        ctx.params.onAgentEvent?.({
+          stream: "lifecycle",
+          data: {
+            phase,
+            ...errorData,
+            ...terminalMeta,
+            ...(livenessState ? { livenessState } : {}),
+            ...(replayInvalid ? { replayInvalid } : {}),
+          },
+        }),
     });
   };
 
@@ -274,7 +266,7 @@ export function handleAgentEnd(
     const postMediaFlushResult = ctx.flushBlockReplyBuffer();
     if (isPromiseLike<void>(postMediaFlushResult)) {
       return postMediaFlushResult.then(() => {
-        const onBlockReplyFlushResult = ctx.params.onBlockReplyFlush?.();
+        const onBlockReplyFlushResult = ctx.params.onBlockReplyFlush?.({ reason: "terminal" });
         if (isPromiseLike<void>(onBlockReplyFlushResult)) {
           return onBlockReplyFlushResult;
         }
@@ -282,7 +274,7 @@ export function handleAgentEnd(
       });
     }
 
-    const onBlockReplyFlushResult = ctx.params.onBlockReplyFlush?.();
+    const onBlockReplyFlushResult = ctx.params.onBlockReplyFlush?.({ reason: "terminal" });
     if (isPromiseLike<void>(onBlockReplyFlushResult)) {
       return onBlockReplyFlushResult;
     }

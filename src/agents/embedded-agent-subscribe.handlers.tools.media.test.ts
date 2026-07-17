@@ -25,6 +25,7 @@ function createMockContext(overrides?: {
       toolResultFormat: overrides?.toolResultFormat,
     },
     state: {
+      replayState: { replayInvalid: false, hadPotentialSideEffects: false },
       toolMetaById: new Map(),
       toolMetas: [],
       toolSummaryById: new Set(),
@@ -60,6 +61,7 @@ function createMockContext(overrides?: {
     // Fill in remaining required fields with no-ops.
     blockChunker: null,
     noteLastAssistant: vi.fn(),
+    noteCompletedAssistant: vi.fn(),
     stripBlockTags: vi.fn((t: string) => t),
     emitBlockChunk: vi.fn(),
     flushBlockReplyBuffer: vi.fn(),

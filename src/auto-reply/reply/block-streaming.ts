@@ -42,9 +42,7 @@ type ProviderBlockStreamingConfig = {
 function resolveScopedBlockStreamingCoalesce(
   config: ProviderBlockStreamingConfig | undefined,
 ): BlockStreamingCoalesceConfig | undefined {
-  return config
-    ? (resolveChannelStreamingBlockCoalesce(config) ?? config.blockStreamingCoalesce)
-    : undefined;
+  return config ? resolveChannelStreamingBlockCoalesce(config) : undefined;
 }
 
 function resolveProviderBlockStreamingCoalesce(params: {
@@ -82,7 +80,7 @@ export type BlockStreamingCoalescing = {
   flushOnEnqueue?: boolean;
 };
 
-export type BlockStreamingChunking = {
+type BlockStreamingChunking = {
   minChars: number;
   maxChars: number;
   breakPreference: "paragraph" | "newline" | "sentence";

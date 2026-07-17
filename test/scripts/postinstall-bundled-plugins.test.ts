@@ -4,11 +4,13 @@ import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { writePackageDistInventory } from "../../scripts/lib/package-dist-inventory.ts";
 import {
   applyBaileysEncryptedStreamFinishHotfix,
   collectLegacyPluginRuntimeDepsStateRoots,
   isSourceCheckoutRoot,
   isDirectPostinstallInvocation,
+  MAX_INSTALLED_DIST_SCAN_ENTRIES,
   pruneOpenClawCompileCache,
   pruneInstalledPackageDist,
   pruneLegacyPluginRuntimeDepsState,
@@ -16,7 +18,6 @@ import {
   runBundledPluginPostinstall,
   runPluginRegistryPostinstallMigration,
 } from "../../scripts/postinstall-bundled-plugins.mjs";
-import { writePackageDistInventory } from "../../src/infra/package-dist-inventory.ts";
 import { createScriptTestHarness } from "./test-helpers.js";
 
 const { createTempDirAsync } = createScriptTestHarness();
@@ -591,7 +592,7 @@ describe("bundled plugin postinstall", () => {
   it("omits unpacked plugin-sdk test helpers from the package dist inventory", async () => {
     const packageRoot = await createTempDirAsync("openclaw-packaged-inventory-");
     const runtimeFile = path.join(packageRoot, "dist", "plugin-sdk", "runtime.js");
-    const testHelperFile = path.join(packageRoot, "dist", "plugin-sdk", "testing.js");
+    const testHelperFile = path.join(packageRoot, "dist", "plugin-sdk", "channel-test-helpers.js");
     const nestedTestHelperFile = path.join(
       packageRoot,
       "dist",
@@ -610,7 +611,7 @@ describe("bundled plugin postinstall", () => {
     const inventory = await writePackageDistInventory(packageRoot);
 
     expect(inventory).toContain("dist/plugin-sdk/runtime.js");
-    expect(inventory).not.toContain("dist/plugin-sdk/testing.js");
+    expect(inventory).not.toContain("dist/plugin-sdk/channel-test-helpers.js");
     expect(inventory).not.toContain(
       "dist/plugin-sdk/src/plugin-sdk/test-helpers/provider-contract.d.ts",
     );
@@ -951,6 +952,145 @@ describe("bundled plugin postinstall", () => {
         log: { log: vi.fn(), warn: vi.fn() },
       }),
     ).toThrow("unsafe dist entry: dist/escape");
+  });
+
+  it("rejects packaged dist scans that exceed the filesystem entry limit", () => {
+    expect(() =>
+      pruneInstalledPackageDist({
+        packageRoot: "/pkg",
+        expectedFiles: new Set(),
+        existsSync: vi.fn(() => true),
+        lstatSync: vi.fn(() => ({
+          isDirectory: () => true,
+          isSymbolicLink: () => false,
+        })),
+        maxDistScanEntries: 1,
+        realpathSync: vi.fn((filePath) => filePath),
+        readdirSync: vi.fn((filePath, options) => {
+          if (filePath === "/pkg/dist" && options?.withFileTypes) {
+            return [
+              {
+                name: "first.js",
+                isDirectory: () => false,
+                isFile: () => true,
+                isSymbolicLink: () => false,
+              },
+              {
+                name: "second.js",
+                isDirectory: () => false,
+                isFile: () => true,
+                isSymbolicLink: () => false,
+              },
+            ];
+          }
+          return [];
+        }),
+        rmSync: vi.fn(),
+        log: { log: vi.fn(), warn: vi.fn() },
+      }),
+    ).toThrow(
+      "installed dist scan exceeded 1 filesystem entries; refusing to scan unbounded package contents",
+    );
+    // One budget spans all three prune walks, and npm upgrades scan old+new
+    // content-hashed dist files (~24k entries as of 2026.6.x). A cap without
+    // several-x headroom fails `npm install -g openclaw` for upgrading users.
+    expect(MAX_INSTALLED_DIST_SCAN_ENTRIES).toBeGreaterThanOrEqual(100_000);
+  });
+
+  it("uses one packaged dist scan budget across listing and pruning phases", () => {
+    expect(() =>
+      pruneInstalledPackageDist({
+        packageRoot: "/pkg",
+        expectedFiles: new Set(["dist/kept.js"]),
+        existsSync: vi.fn(() => true),
+        lstatSync: vi.fn(() => ({
+          isDirectory: () => true,
+          isSymbolicLink: () => false,
+        })),
+        maxDistScanEntries: 1,
+        readFileSync: vi.fn(() => "export {};\n"),
+        realpathSync: vi.fn((filePath) => filePath),
+        readdirSync: vi.fn((filePath, options) => {
+          if (filePath === "/pkg/dist" && options?.withFileTypes) {
+            return [
+              {
+                name: "kept.js",
+                isDirectory: () => false,
+                isFile: () => true,
+                isSymbolicLink: () => false,
+              },
+            ];
+          }
+          return [];
+        }),
+        rmSync: vi.fn(),
+        log: { log: vi.fn(), warn: vi.fn() },
+      }),
+    ).toThrow(
+      "installed dist scan exceeded 1 filesystem entries; refusing to scan unbounded package contents",
+    );
+  });
+
+  it("applies the packaged dist scan budget to legacy dependency debris prepass", () => {
+    expect(() =>
+      pruneInstalledPackageDist({
+        packageRoot: "/pkg",
+        expectedFiles: new Set(),
+        existsSync: vi.fn(() => true),
+        lstatSync: vi.fn(() => ({
+          isDirectory: () => true,
+          isSymbolicLink: () => false,
+        })),
+        maxDistScanEntries: 1,
+        realpathSync: vi.fn((filePath) => filePath),
+        readdirSync: vi.fn((filePath, options) => {
+          if (filePath === "/pkg/dist/extensions" && options?.withFileTypes) {
+            return [
+              {
+                name: "slack",
+                isDirectory: () => true,
+                isFile: () => false,
+                isSymbolicLink: () => false,
+              },
+            ];
+          }
+          if (filePath === "/pkg/dist/extensions/slack" && options?.withFileTypes) {
+            return [
+              {
+                name: "node_modules",
+                isDirectory: () => true,
+                isFile: () => false,
+                isSymbolicLink: () => false,
+              },
+            ];
+          }
+          return [];
+        }),
+        rmSync: vi.fn(),
+        log: { log: vi.fn(), warn: vi.fn() },
+      }),
+    ).toThrow(
+      "installed dist scan exceeded 1 filesystem entries; refusing to scan unbounded package contents",
+    );
+  });
+
+  it("prunes sibling empty dist directories after closing parent scans", async () => {
+    const packageRoot = await createTempDirAsync("openclaw-packaged-install-empty-dirs-");
+    const firstEmptyDir = path.join(packageRoot, "dist", "empty-a");
+    const secondEmptyDir = path.join(packageRoot, "dist", "empty-b");
+    await fs.mkdir(firstEmptyDir, { recursive: true });
+    await fs.mkdir(secondEmptyDir, { recursive: true });
+
+    expect(
+      pruneInstalledPackageDist({
+        packageRoot,
+        expectedFiles: new Set(),
+        log: { log: vi.fn(), warn: vi.fn() },
+      }),
+    ).toEqual([]);
+
+    await expectPathMissing(firstEmptyDir);
+    await expectPathMissing(secondEmptyDir);
   });
 
   it("prunes stale bundled plugin dependency debris from packaged dist", async () => {

@@ -11,7 +11,7 @@ import {
   resolveSessionToolsVisibility,
 } from "../../plugin-sdk/session-visibility.js";
 import { resolveSandboxedSessionToolContext } from "./sessions-access.js";
-import { testing as sessionsResolutionTesting } from "./sessions-resolution.js";
+import { testing as sessionsResolutionTesting } from "./sessions-resolution.test-support.js";
 
 describe("resolveSessionToolsVisibility", () => {
   it("defaults to tree when unset or invalid", () => {
@@ -278,7 +278,7 @@ describe("createSessionVisibilityGuard", () => {
       allowed: false,
       status: "forbidden",
       error:
-        "Session list visibility is restricted. Set tools.sessions.visibility=all to allow cross-agent access.",
+        "Session list visibility is restricted. Set tools.sessions.visibility=all and tools.agentToAgent.enabled=true to allow cross-agent access; use tools.agentToAgent.allow to restrict permitted agent pairs.",
     });
   });
 
@@ -340,7 +340,7 @@ describe("createSessionVisibilityGuard", () => {
       allowed: false,
       status: "forbidden",
       error:
-        "Session history visibility is restricted. Set tools.sessions.visibility=all to allow cross-agent access.",
+        "Session history visibility is restricted. Set tools.sessions.visibility=all and tools.agentToAgent.enabled=true to allow cross-agent access; use tools.agentToAgent.allow to restrict permitted agent pairs.",
     });
   });
 

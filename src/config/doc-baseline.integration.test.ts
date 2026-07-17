@@ -5,7 +5,6 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { withTempDir } from "../test-helpers/temp-dir.js";
 import {
   type ConfigDocBaselineEntry,
-  flattenConfigDocBaselineEntries,
   renderConfigDocBaselineArtifacts,
   writeConfigDocBaselineArtifacts,
 } from "./doc-baseline.js";
@@ -44,7 +43,11 @@ describe("config doc baseline integration", () => {
   function getSharedByPath() {
     sharedByPathPromise ??= getSharedRendered().then(
       ({ baseline }) =>
-        new Map(flattenConfigDocBaselineEntries(baseline).map((entry) => [entry.path, entry])),
+        new Map(
+          [...baseline.coreEntries, ...baseline.channelEntries, ...baseline.pluginEntries].map(
+            (entry) => [entry.path, entry],
+          ),
+        ),
     );
     return sharedByPathPromise;
   }
@@ -136,6 +139,14 @@ describe("config doc baseline integration", () => {
     expect(requireEntry(byPath, "bindings.*.type").path).toBe("bindings.*.type");
     expect(requireEntry(byPath, "bindings.*.match.channel").path).toBe("bindings.*.match.channel");
     expect(requireEntry(byPath, "bindings.*.match.peer.id").path).toBe("bindings.*.match.peer.id");
+  });
+
+  it("merges tuple item branches from the bundled config schema", async () => {
+    const byPath = await getSharedByPath();
+    const rangePath = "models.providers.*.models.*.cost.tieredPricing.*.range";
+
+    expect(requireEntry(byPath, rangePath).type).toBe("array");
+    expect(requireEntry(byPath, `${rangePath}.*`).type).toBe("number");
   });
 
   it("supports check mode for stale hash files", async () => {

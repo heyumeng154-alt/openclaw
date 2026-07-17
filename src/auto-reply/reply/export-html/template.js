@@ -13,7 +13,16 @@
     bytes[i] = binary.charCodeAt(i);
   }
   const data = JSON.parse(new TextDecoder("utf-8").decode(bytes));
-  const { header, entries, leafId: defaultLeafId, systemPrompt, tools, renderedTools } = data;
+  const {
+    header,
+    entries,
+    leafId: defaultLeafId,
+    hasLeafControl = false,
+    systemPrompt,
+    tools,
+    renderedTools,
+    warning,
+  } = data;
 
   // ============================================================
   // URL PARAMETER HANDLING
@@ -691,11 +700,11 @@
     return "application/octet-stream";
   }
 
-  function sanitizeImageBase64(data) {
-    if (typeof data !== "string") {
+  function sanitizeImageBase64(base64Data) {
+    if (typeof base64Data !== "string") {
       return "";
     }
-    const cleaned = data.replace(/\s+/g, "");
+    const cleaned = base64Data.replace(/\s+/g, "");
     if (!cleaned || cleaned.length % 4 !== 0 || !SAFE_BASE64_RE.test(cleaned)) {
       return "";
     }
@@ -704,11 +713,11 @@
 
   function renderDataUrlImage(img, className) {
     const mimeType = sanitizeImageMimeType(img?.mimeType);
-    const base64 = sanitizeImageBase64(img?.data);
-    if (!base64) {
+    const imgBase64 = sanitizeImageBase64(img?.data);
+    if (!imgBase64) {
       return "";
     }
-    return `<img src="data:${mimeType};base64,${base64}" class="${className}" />`;
+    return `<img src="data:${mimeType};base64,${imgBase64}" class="${className}" />`;
   }
   /**
    * Truncate string to maxLen chars, append "..." if truncated.
@@ -717,7 +726,19 @@
     if (s.length <= maxLen) {
       return s;
     }
-    return s.slice(0, maxLen) + "...";
+    let endOffset = maxLen;
+    const beforeBoundary = s.charCodeAt(endOffset - 1);
+    const afterBoundary = s.charCodeAt(endOffset);
+    // Keep the existing UTF-16 unit ceiling, but retreat if it splits a surrogate pair.
+    if (
+      beforeBoundary >= 0xd800 &&
+      beforeBoundary <= 0xdbff &&
+      afterBoundary >= 0xdc00 &&
+      afterBoundary <= 0xdfff
+    ) {
+      endOffset -= 1;
+    }
+    return s.slice(0, endOffset) + "...";
   }
 
   /**
@@ -856,8 +877,8 @@
         div.appendChild(content);
         // Navigate to the newest leaf through this node, but scroll to the clicked node
         div.addEventListener("click", () => {
-          const leafId = findNewestLeaf(entry.id);
-          navigateTo(leafId, "target", entry.id);
+          const targetLeafId = findNewestLeaf(entry.id);
+          navigateTo(targetLeafId, "target", entry.id);
         });
 
         container.appendChild(div);
@@ -889,7 +910,7 @@
     setTimeout(() => {
       const activeNode = container.querySelector(".tree-node.active");
       if (activeNode) {
-        activeNode.scrollIntoView({ block: "nearest" });
+        activeNode.scrollIntoView?.({ block: "nearest" });
       }
     }, 0);
   }
@@ -1559,7 +1580,11 @@
       msgParts.push(`${globalStats.branchSummaries} branch summaries`);
     }
 
-    let html = `
+    let html = "";
+    if (warning) {
+      html += `<div class="export-warning">${escapeHtml(warning)}</div>`;
+    }
+    html += `
           <div class="header">
             <h1>Session: ${escapeHtml(header?.id || "unknown")}</h1>
             <div class="help-bar">
@@ -1710,7 +1735,7 @@
         const scrollTargetId = scrollToEntryId || targetId;
         const targetEl = document.getElementById(`entry-${scrollTargetId}`);
         if (targetEl) {
-          targetEl.scrollIntoView({ block: "center" });
+          targetEl.scrollIntoView?.({ block: "center" });
           // Briefly highlight the target message
           if (scrollToEntryId) {
             targetEl.classList.add("highlight");
@@ -1952,6 +1977,9 @@
     } else {
       navigateTo(leafId, "none");
     }
+  } else if (hasLeafControl) {
+    // A null leaf selected by a control record is an intentional empty branch.
+    navigateTo(null, "none");
   } else if (entries.length > 0) {
     // Fallback: use last entry if no leafId
     navigateTo(entries[entries.length - 1].id, "none");

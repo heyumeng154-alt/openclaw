@@ -6,6 +6,7 @@ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { parseConfigJson5 } from "../config/io.js";
 import { resolveConfigPath, resolveStateDir } from "../config/paths.js";
 import { redactConfigObject } from "../config/redact-snapshot.js";
+import { buildConfigSchema } from "../config/schema.js";
 import { resolveHomeRelativePath } from "../infra/home-dir.js";
 import { VERSION } from "../version.js";
 import {
@@ -33,7 +34,7 @@ import {
 } from "./diagnostic-support-redaction.js";
 import { readConfiguredLogTail, type LogTailPayload } from "./log-tail.js";
 
-export const DIAGNOSTIC_SUPPORT_EXPORT_VERSION = 1;
+const DIAGNOSTIC_SUPPORT_EXPORT_VERSION = 1;
 
 const DEFAULT_LOG_LIMIT = 5000;
 const DEFAULT_LOG_MAX_BYTES = 1_000_000;
@@ -42,7 +43,7 @@ const SUPPORT_EXPORT_SUFFIX = ".zip";
 type Awaitable<T> = T | Promise<T>;
 type SupportSnapshotReader = () => Awaitable<unknown>;
 
-export type DiagnosticSupportExportOptions = {
+type DiagnosticSupportExportOptions = {
   outputPath?: string;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
@@ -56,7 +57,7 @@ export type DiagnosticSupportExportOptions = {
   readHealthSnapshot?: SupportSnapshotReader;
 };
 
-export type DiagnosticSupportExportManifest = {
+type DiagnosticSupportExportManifest = {
   version: typeof DIAGNOSTIC_SUPPORT_EXPORT_VERSION;
   generatedAt: string;
   openclawVersion: string;
@@ -72,9 +73,9 @@ export type DiagnosticSupportExportManifest = {
   };
 };
 
-export type DiagnosticSupportExportFile = DiagnosticSupportBundleFile;
+type DiagnosticSupportExportFile = DiagnosticSupportBundleFile;
 
-export type DiagnosticSupportExportArtifact = {
+type DiagnosticSupportExportArtifact = {
   manifest: DiagnosticSupportExportManifest;
   files: DiagnosticSupportExportFile[];
 };
@@ -291,7 +292,10 @@ function sanitizeConfigShape(
 }
 
 function sanitizeConfigDetails(parsed: unknown, redaction: SupportRedactionContext): unknown {
-  return sanitizeSupportConfigValue(redactConfigObject(parsed), redaction);
+  return sanitizeSupportConfigValue(
+    redactConfigObject(parsed, buildConfigSchema().uiHints),
+    redaction,
+  );
 }
 
 function configShapeReadFailure(params: {
@@ -670,7 +674,7 @@ function resolveOutputPath(options: {
   return resolved;
 }
 
-export async function buildDiagnosticSupportExport(
+async function buildDiagnosticSupportExport(
   options: DiagnosticSupportExportOptions = {},
 ): Promise<DiagnosticSupportExportArtifact> {
   const env = options.env ?? process.env;
@@ -810,3 +814,4 @@ export async function writeDiagnosticSupportExport(
     manifest: artifact.manifest,
   };
 }
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

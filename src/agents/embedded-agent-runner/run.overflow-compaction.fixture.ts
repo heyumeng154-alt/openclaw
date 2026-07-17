@@ -1,6 +1,8 @@
 /**
  * Test fixtures for embedded-run overflow compaction scenarios.
  */
+import type { ContextEngineSessionTarget } from "../../context-engine/types.js";
+import { isAgentToolReplaySafe } from "../tool-replay-safety.js";
 import { buildAttemptReplayMetadata } from "./run/incomplete-turn.js";
 import type { EmbeddedRunAttemptResult } from "./run/types.js";
 
@@ -18,6 +20,7 @@ export function makeCompactionSuccess(params: {
   tokensAfter?: number;
   sessionId?: string;
   sessionFile?: string;
+  sessionTarget?: ContextEngineSessionTarget;
 }) {
   return {
     ok: true as const,
@@ -29,6 +32,7 @@ export function makeCompactionSuccess(params: {
       ...(params.tokensAfter !== undefined ? { tokensAfter: params.tokensAfter } : {}),
       ...(params.sessionId !== undefined ? { sessionId: params.sessionId } : {}),
       ...(params.sessionFile !== undefined ? { sessionFile: params.sessionFile } : {}),
+      ...(params.sessionTarget !== undefined ? { sessionTarget: params.sessionTarget } : {}),
     },
   };
 }
@@ -36,7 +40,11 @@ export function makeCompactionSuccess(params: {
 export function makeAttemptResult(
   overrides: Partial<EmbeddedRunAttemptResult> = {},
 ): EmbeddedRunAttemptResult {
-  const toolMetas = overrides.toolMetas ?? [];
+  const toolMetas = (overrides.toolMetas ?? []).map((entry) =>
+    Object.assign({}, entry, {
+      replaySafe: entry.replaySafe ?? isAgentToolReplaySafe({ name: entry.toolName }),
+    }),
+  );
   const didSendViaMessagingTool = overrides.didSendViaMessagingTool ?? false;
   const messagingToolSentTexts = overrides.messagingToolSentTexts ?? [];
   const messagingToolSentMediaUrls = overrides.messagingToolSentMediaUrls ?? [];
@@ -54,9 +62,10 @@ export function makeAttemptResult(
     promptErrorSource: null,
     sessionIdUsed: "test-session",
     assistantTexts: ["Hello!"],
-    toolMetas,
     acceptedSessionSpawns,
     lastAssistant: undefined,
+    currentAttemptCompletedAssistant:
+      overrides.currentAttemptCompletedAssistant ?? overrides.currentAttemptAssistant,
     messagesSnapshot: [],
     replayMetadata:
       overrides.replayMetadata ??
@@ -80,6 +89,7 @@ export function makeAttemptResult(
     messagingToolSentTargets,
     cloudCodeAssistFormatError: false,
     ...overrides,
+    toolMetas,
   };
 }
 
@@ -98,6 +108,7 @@ type MockCompactDirect = {
       tokensAfter?: number;
       sessionId?: string;
       sessionFile?: string;
+      sessionTarget?: ContextEngineSessionTarget;
     };
   }) => unknown;
 };

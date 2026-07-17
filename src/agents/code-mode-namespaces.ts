@@ -4,6 +4,7 @@
  * files, and a guarded invocation runtime.
  */
 import { isRecord } from "../../packages/normalization-core/src/record-coerce.js";
+import { toCodeModeJsonSafe } from "./code-mode-json.js";
 
 const FORBIDDEN_NAMESPACE_PATH_SEGMENTS = new Set(["__proto__", "constructor", "prototype"]);
 const NAMESPACE_PATH_KEY_SEPARATOR = "\u0000";
@@ -34,7 +35,7 @@ const RESERVED_NAMESPACE_GLOBALS = new Set([
 const CODE_MODE_NAMESPACE_REGISTRY_KEY = Symbol.for("openclaw.codeMode.namespaces");
 
 /** Runtime context passed to plugin code-mode namespace scope factories. */
-export type CodeModeNamespaceContext = {
+type CodeModeNamespaceContext = {
   config?: unknown;
   runtimeConfig?: unknown;
   agentId?: string;
@@ -47,13 +48,13 @@ export type CodeModeNamespaceContext = {
 };
 
 /** Object installed into a code-mode namespace global. */
-export type CodeModeNamespaceScope = Record<string, unknown>;
+type CodeModeNamespaceScope = Record<string, unknown>;
 
 /** Maps JavaScript namespace function arguments into a tool input payload. */
-export type CodeModeNamespaceToolInputMapper = (args: unknown[]) => unknown;
+type CodeModeNamespaceToolInputMapper = (args: unknown[]) => unknown;
 
 /** Marker object used inside namespace scopes to represent a tool invocation. */
-export type CodeModeNamespaceToolCall = {
+type CodeModeNamespaceToolCall = {
   readonly [CODE_MODE_NAMESPACE_TOOL_CALL]: true;
   readonly toolName: string;
   readonly catalogId?: string;
@@ -62,7 +63,7 @@ export type CodeModeNamespaceToolCall = {
 };
 
 /** Plugin registration contract for one code-mode namespace. */
-export type CodeModeNamespaceRegistration = {
+type CodeModeNamespaceRegistration = {
   id: string;
   globalName: string;
   description?: string;
@@ -74,7 +75,7 @@ export type CodeModeNamespaceRegistration = {
 };
 
 /** Registration with the owning plugin id attached. */
-export type RegisteredCodeModeNamespace = CodeModeNamespaceRegistration & {
+type RegisteredCodeModeNamespace = CodeModeNamespaceRegistration & {
   pluginId: string;
 };
 
@@ -283,19 +284,21 @@ export function registerCodeModeNamespaceForPlugin(
   registryState.registrations.set(normalized.id, normalized);
 }
 
-/** Removes one namespace registration by id. */
-export function unregisterCodeModeNamespace(namespaceId: string): boolean {
-  return registryState.registrations.delete(namespaceId.trim());
-}
-
 /** Lists registered namespaces in deterministic id order. */
-export function listCodeModeNamespaces(): RegisteredCodeModeNamespace[] {
+function listCodeModeNamespaces(): RegisteredCodeModeNamespace[] {
   return [...registryState.registrations.values()].toSorted((a, b) => a.id.localeCompare(b.id));
 }
 
 /** Clears all namespace registrations for isolated tests. */
-export function clearCodeModeNamespacesForTest(): void {
+function clearCodeModeNamespacesForTest(): void {
   registryState.registrations.clear();
+}
+
+if (process.env.VITEST || process.env.NODE_ENV === "test") {
+  (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.codeModeNamespacesTestApi")] = {
+    clearCodeModeNamespacesForTest,
+    listCodeModeNamespaces,
+  };
 }
 
 /** Clears namespace registrations owned by one plugin. */
@@ -578,6 +581,7 @@ export type CodeModeApiVirtualFile = {
   path: string;
   description?: string;
   content: string;
+  bytes: number;
 };
 
 function buildMcpParamDocs(schema: unknown): McpApiParamDoc[] {
@@ -876,18 +880,22 @@ export function createCodeModeApiVirtualFiles(
   if (!model) {
     return [];
   }
+  const rootContent = renderMcpRootFile(model.docs);
   const files: CodeModeApiVirtualFile[] = [
     {
       path: "mcp/index.d.ts",
       description: "Root MCP namespace declaration and server list.",
-      content: renderMcpRootFile(model.docs),
+      content: rootContent,
+      bytes: Buffer.byteLength(rootContent, "utf8"),
     },
   ];
   for (const server of model.docs) {
+    const content = renderMcpServerHeader(server, server.tools);
     files.push({
       path: `mcp/${server.identifier}.d.ts`,
       description: `MCP server declaration for ${server.serverName}.`,
-      content: renderMcpServerHeader(server, server.tools),
+      content,
+      bytes: Buffer.byteLength(content, "utf8"),
     });
   }
   return files;
@@ -970,35 +978,6 @@ export function describeCodeModeNamespacesForPrompt(
   return lines.join("\n");
 }
 
-function toJsonSafe(value: unknown): unknown {
-  if (value === undefined) {
-    return null;
-  }
-  try {
-    const serialized = JSON.stringify(value);
-    return serialized === undefined ? null : (JSON.parse(serialized) as unknown);
-  } catch {
-    if (value instanceof Error) {
-      return { name: value.name, message: value.message };
-    }
-    if (value === null) {
-      return null;
-    }
-    switch (typeof value) {
-      case "string":
-      case "number":
-      case "boolean":
-        return value;
-      case "bigint":
-      case "symbol":
-      case "function":
-        return String(value);
-      default:
-        return Object.prototype.toString.call(value);
-    }
-  }
-}
-
 function assertNamespacePathSegment(segment: string): void {
   if (
     !segment ||
@@ -1029,7 +1008,7 @@ function serializeNamespaceScopeValue(
     );
   }
   if (value === null || typeof value !== "object") {
-    return { kind: "value", value: toJsonSafe(value) };
+    return { kind: "value", value: toCodeModeJsonSafe(value) };
   }
   if (stack.has(value)) {
     throw new Error(`Circular code mode namespace scope at ${path.join(".") || "(root)"}.`);
@@ -1135,12 +1114,12 @@ export async function createCodeModeNamespaceRuntime(
       }
       const input = target.input ? await target.input(args) : (args[0] ?? {});
       if (target.local) {
-        return toJsonSafe(input);
+        return toCodeModeJsonSafe(input);
       }
       if (!target.catalogId && !entry.registration.requiredToolNames.includes(target.toolName)) {
         throw new Error(`Code mode namespace path targets undeclared tool: ${target.toolName}`);
       }
-      return toJsonSafe(
+      return toCodeModeJsonSafe(
         await executeTool({
           pluginId: entry.registration.pluginId,
           toolName: target.toolName,
@@ -1153,3 +1132,4 @@ export async function createCodeModeNamespaceRuntime(
     },
   };
 }
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

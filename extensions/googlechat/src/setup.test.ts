@@ -1,5 +1,6 @@
 // Googlechat tests cover setup plugin behavior.
 import {
+  createStartAccountContext,
   expectLifecyclePatch,
   expectPendingUntilAbort,
   startAccountAndTrackLifecycle,
@@ -12,6 +13,7 @@ import {
 } from "openclaw/plugin-sdk/plugin-test-runtime";
 import type { WizardPrompter } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/setup";
+import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/status-helpers";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../runtime-api.js";
 import {
@@ -106,6 +108,60 @@ describe("googlechat setup", () => {
         input: { useEnv: false, token: "", tokenFile: "" },
       } as never),
     ).toBe("Google Chat requires --token (service account JSON) or --token-file.");
+  });
+
+  it("ignores blank service-account env values during setup", async () => {
+    vi.stubEnv("GOOGLE_CHAT_SERVICE_ACCOUNT", "   ");
+    vi.stubEnv("GOOGLE_CHAT_SERVICE_ACCOUNT_FILE", "  ");
+    const confirm = vi.fn(async () => true);
+    const select = vi.fn(async () => "file" as const) as unknown as WizardPrompter["select"];
+
+    const result = await googlechatSetupWizard.prepare?.({
+      cfg: {},
+      accountId: DEFAULT_ACCOUNT_ID,
+      credentialValues: {},
+      prompter: createTestWizardPrompter({ confirm, select }),
+    } as never);
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(select).toHaveBeenCalledOnce();
+    expect(result?.credentialValues?.["__googlechatUseEnv"]).toBe("0");
+  });
+
+  it("offers valid service-account env credentials for the default account", async () => {
+    vi.stubEnv("GOOGLE_CHAT_SERVICE_ACCOUNT", '  {"client_email":"bot@example.com"}  ');
+    vi.stubEnv("GOOGLE_CHAT_SERVICE_ACCOUNT_FILE", "  ");
+    const confirm = vi.fn(async () => true);
+    const select = vi.fn(async () => "file" as const) as unknown as WizardPrompter["select"];
+
+    const result = await googlechatSetupWizard.prepare?.({
+      cfg: {},
+      accountId: DEFAULT_ACCOUNT_ID,
+      credentialValues: {},
+      prompter: createTestWizardPrompter({ confirm, select }),
+    } as never);
+
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(select).not.toHaveBeenCalled();
+    expect(result?.credentialValues?.["__googlechatUseEnv"]).toBe("1");
+  });
+
+  it("does not offer default-account env credentials to named accounts", async () => {
+    vi.stubEnv("GOOGLE_CHAT_SERVICE_ACCOUNT", '{"client_email":"bot@example.com"}');
+    vi.stubEnv("GOOGLE_CHAT_SERVICE_ACCOUNT_FILE", "/tmp/googlechat.json");
+    const confirm = vi.fn(async () => true);
+    const select = vi.fn(async () => "file" as const) as unknown as WizardPrompter["select"];
+
+    const result = await googlechatSetupWizard.prepare?.({
+      cfg: {},
+      accountId: "alerts",
+      credentialValues: {},
+      prompter: createTestWizardPrompter({ confirm, select }),
+    } as never);
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(select).toHaveBeenCalledOnce();
+    expect(result?.credentialValues?.["__googlechatUseEnv"]).toBe("0");
   });
 
   it("builds a patch from token-file and trims optional webhook fields", () => {
@@ -302,10 +358,10 @@ describe("googlechat setup", () => {
   });
 
   it("uses configured defaultAccount for omitted allowFrom prompt context", async () => {
-    const prompter = {
+    const prompter = createTestWizardPrompter({
       note: vi.fn(async () => {}),
       text: vi.fn(async () => "users/123456789"),
-    };
+    });
 
     const next = await googlechatSetupWizard.dmPolicy?.promptAllowFrom?.({
       cfg: {
@@ -326,7 +382,7 @@ describe("googlechat setup", () => {
           },
         },
       } as OpenClawConfig,
-      prompter: prompter as any,
+      prompter,
     });
 
     expect(next?.channels?.googlechat?.dm?.allowFrom).toEqual(["users/root"]);
@@ -380,6 +436,22 @@ describe("googlechat setup", () => {
         expect(unregister).toHaveBeenCalledOnce();
       },
     });
+    expectLifecyclePatch(patches, { running: true });
+    expectLifecyclePatch(patches, { running: false });
+  });
+
+  it("clears running status when monitor startup fails", async () => {
+    hoisted.startGoogleChatMonitor.mockRejectedValue(new Error("webhook bind failed"));
+    const patches: ChannelAccountSnapshot[] = [];
+
+    const task = startGoogleChatGatewayAccount(
+      createStartAccountContext({
+        account: buildAccount(),
+        statusPatchSink: (next) => patches.push({ ...next }),
+      }),
+    );
+
+    await expect(task).rejects.toThrow("webhook bind failed");
     expectLifecyclePatch(patches, { running: true });
     expectLifecyclePatch(patches, { running: false });
   });

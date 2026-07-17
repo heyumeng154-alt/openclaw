@@ -10,13 +10,18 @@
  * Separated from gateway.ts for testability and to keep handleMessage thin.
  */
 
+import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "openclaw/plugin-sdk/agent-runtime";
 import { buildChannelInboundEventContext } from "openclaw/plugin-sdk/channel-inbound";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { isSilentReplyPayloadText, SILENT_REPLY_TOKEN } from "openclaw/plugin-sdk/reply-chunking";
 import type { FinalizedMsgContext } from "openclaw/plugin-sdk/reply-runtime";
+import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
+import { createQQBotMarkdownChunker } from "../messaging/markdown-table-chunking.js";
 import {
   parseAndSendMediaTags,
   sendPlainReply,
   sendTextOnlyReply,
+  TEXT_CHUNK_LIMIT,
   type DeliverDeps,
 } from "../messaging/outbound-deliver.js";
 import {
@@ -80,10 +85,9 @@ function shouldDeliverToolProgressImmediately(
   if (useOfficialC2cStream) {
     return true;
   }
+  // Absent streaming keeps tool progress buffered; a configured object opts in
+  // unless mode is "off". Legacy scalar spellings are doctor-migrated.
   const streaming = account.config?.streaming;
-  if (streaming === true) {
-    return true;
-  }
   return typeof streaming === "object" && streaming !== null && streaming.mode !== "off";
 }
 
@@ -115,6 +119,10 @@ function isSilentBlockReply(payload: ReplyDeliverPayload): boolean {
   return !hasReplyMedia(payload) && isSilentBlockReplyText((payload.text ?? "").trim());
 }
 
+function isMediaOnlyBlockReply(payload: ReplyDeliverPayload): boolean {
+  return hasReplyMedia(payload) && isSilentBlockReplyText((payload.text ?? "").trim());
+}
+
 // ============ dispatchOutbound ============
 
 /**
@@ -130,6 +138,12 @@ export async function dispatchOutbound(
   const { runtime, cfg, account, log } = deps;
   const { event, qualifiedTarget } = inbound;
 
+  const openClawCfg = cfg as OpenClawConfig;
+  const routeAgentId = inbound.route.agentId ?? resolveDefaultAgentId(openClawCfg);
+  const workspaceDir = resolveAgentWorkspaceDir(openClawCfg, routeAgentId);
+  const gatewayMediaContext = workspaceDir
+    ? { mediaAccess: { workspaceDir }, mediaLocalRoots: [workspaceDir] }
+    : {};
   const replyTarget = {
     type: event.type,
     senderId: event.senderId,
@@ -138,7 +152,7 @@ export async function dispatchOutbound(
     guildId: event.guildId,
     groupOpenid: event.groupOpenid,
   };
-  const replyCtx = { target: replyTarget, account, cfg, log };
+  const replyCtx = { target: replyTarget, account, cfg, log, ...gatewayMediaContext };
 
   const sendWithRetry = <T>(sendFn: (token: string) => Promise<T>) =>
     sendWithTokenRetry(account.appId, account.clientSecret, sendFn, log, account.accountId);
@@ -190,6 +204,7 @@ export async function dispatchOutbound(
           accountId: account.accountId,
           replyToId: event.messageId,
           account,
+          ...gatewayMediaContext,
         }).then((r) => {
           if (ac.signal.aborted) {
             return { channel: "qqbot", error: "suppressed" } as OutboundResult;
@@ -223,10 +238,9 @@ export async function dispatchOutbound(
           thrownError: "Tool fallback failed",
         });
       }
-      return;
     }
     if (toolTexts.length > 0) {
-      await sendErrorMessage(toolTexts.slice(-3).join("\n---\n").slice(0, 2000));
+      await sendErrorMessage(truncateUtf16Safe(toolTexts.slice(-3).join("\n---\n"), 2000));
     }
   };
 
@@ -277,6 +291,9 @@ export async function dispatchOutbound(
   });
 
   // ---- Deliver deps ----
+  const markdownChunker = createQQBotMarkdownChunker((text, limit) =>
+    runtime.channel.text.chunkMarkdownText(text, limit),
+  );
   const deliverDeps: DeliverDeps = {
     mediaSender: {
       sendPhoto: (target, imageUrl) => sendPhoto(target, imageUrl),
@@ -286,7 +303,35 @@ export async function dispatchOutbound(
       sendDocument: (target, filePath) => sendDocument(target, filePath),
       sendMedia: (opts) => sendMedia(opts),
     },
-    chunkText: (text, limit) => runtime.channel.text.chunkMarkdownText(text, limit),
+    chunkText: (text, limit) => markdownChunker.chunkText(text, limit),
+  };
+  const flushPendingMarkdownText = async (): Promise<void> => {
+    const pendingChunks = markdownChunker.flushPendingText(TEXT_CHUNK_LIMIT);
+    if (pendingChunks.length === 0) {
+      return;
+    }
+    const passthroughDeps: DeliverDeps = {
+      ...deliverDeps,
+      chunkText: (text) => [text],
+    };
+    for (const chunk of pendingChunks) {
+      await sendTextOnlyReply(
+        chunk,
+        {
+          type: event.type,
+          senderId: event.senderId,
+          messageId: event.messageId,
+          channelId: event.channelId,
+          groupOpenid: event.groupOpenid,
+          msgIdx: event.msgIdx,
+        },
+        { account, qualifiedTarget, log },
+        sendWithRetry,
+        () => undefined,
+        passthroughDeps,
+      );
+      recordOutbound();
+    }
   };
 
   const replyDeps: ReplyDispatcherDeps = {
@@ -322,7 +367,7 @@ export async function dispatchOutbound(
             groupOpenid: event.groupOpenid,
             msgIdx: event.msgIdx,
           },
-          { account, qualifiedTarget, log },
+          { account, qualifiedTarget, log, ...gatewayMediaContext },
           sendWithRetry,
           () => undefined,
           deliverDeps,
@@ -339,10 +384,7 @@ export async function dispatchOutbound(
     });
 
   // ---- Dispatch ----
-  const messagesConfig = runtime.channel.reply.resolveEffectiveMessagesConfig(
-    cfg,
-    inbound.route.agentId,
-  );
+  const messagesConfig = runtime.channel.reply.resolveEffectiveMessagesConfig(cfg, routeAgentId);
 
   const targetType =
     event.type === "c2c"
@@ -374,15 +416,11 @@ export async function dispatchOutbound(
           channelId: event.channelId,
         },
         log,
+        ...gatewayMediaContext,
       },
     });
   }
 
-  const cfgWithSession = cfg as { session?: { store?: unknown } };
-  const agentId = inbound.route.agentId ?? "default";
-  const storePath = runtime.channel.session.resolveStorePath(cfgWithSession.session?.store, {
-    agentId,
-  });
   const dispatchPromise = runtime.channel.inbound.run({
     channel: "qqbot",
     accountId: inbound.route.accountId,
@@ -396,12 +434,11 @@ export async function dispatchOutbound(
         raw: inbound,
       }),
       resolveTurn: () => ({
+        cfg: openClawCfg,
         channel: "qqbot",
         accountId: inbound.route.accountId,
-        routeSessionKey: inbound.route.sessionKey,
-        storePath,
+        route: { agentId: routeAgentId, sessionKey: inbound.route.sessionKey },
         ctxPayload,
-        recordInboundSession: runtime.channel.session.recordInboundSession,
         record: {
           onRecordError: (err: unknown) => {
             log?.error(
@@ -437,7 +474,7 @@ export async function dispatchOutbound(
                         groupOpenid: event.groupOpenid,
                         msgIdx: event.msgIdx,
                       },
-                      { account, qualifiedTarget, log },
+                      { account, qualifiedTarget, log, ...gatewayMediaContext },
                       sendWithRetry,
                       () => undefined,
                       deliverDeps,
@@ -467,6 +504,7 @@ export async function dispatchOutbound(
                           accountId: account.accountId,
                           replyToId: event.messageId,
                           account,
+                          ...gatewayMediaContext,
                         });
                       } catch {}
                     }
@@ -492,7 +530,11 @@ export async function dispatchOutbound(
                 }
                 hasVisibleBlockResponse = true;
 
-                if (streamingController && !streamingController.isTerminalPhase) {
+                if (
+                  streamingController &&
+                  !streamingController.isTerminalPhase &&
+                  !isMediaOnlyBlockReply(payload)
+                ) {
                   try {
                     await streamingController.onDeliver(payload);
                   } catch (err) {
@@ -539,7 +581,7 @@ export async function dispatchOutbound(
                   groupOpenid: event.groupOpenid,
                   msgIdx: event.msgIdx,
                 };
-                const deliverActx = { account, qualifiedTarget, log };
+                const deliverActx = { account, qualifiedTarget, log, ...gatewayMediaContext };
 
                 // 1. Media tags
                 const mediaResult = await parseAndSendMediaTags(
@@ -639,13 +681,7 @@ export async function dispatchOutbound(
             replyOptions: {
               disableBlockStreaming: useOfficialC2cStream
                 ? true
-                : (() => {
-                    const s = account.config?.streaming;
-                    if (s === false) {
-                      return true;
-                    }
-                    return typeof s === "object" && s !== null && s.mode === "off";
-                  })(),
+                : account.config?.streaming?.mode === "off",
               ...(streamingController
                 ? {
                     onPartialReply: async (payload: { text?: string }) => {
@@ -690,6 +726,7 @@ export async function dispatchOutbound(
       toolFallbackSent = true;
       await sendToolFallback();
     }
+    await flushPendingMarkdownText();
     if (streamingController && !streamingController.isTerminalPhase) {
       try {
         streamingController.markFullyComplete();
@@ -731,7 +768,6 @@ async function buildCtxPayload(
   const commandSource = resolveCommandSource(inbound, runtime, cfg);
   const hasImageMedia = inbound.localMediaPaths.length > 0 || inbound.remoteMediaUrls.length > 0;
   return buildChannelInboundEventContext({
-    finalize: runtime.channel.reply.finalizeInboundContext,
     channel: "qqbot",
     accountId: inbound.route.accountId,
     messageId: event.messageId,
@@ -746,7 +782,7 @@ async function buildCtxPayload(
       id: inbound.peerId,
     },
     route: {
-      agentId: inbound.route.agentId ?? "main",
+      agentId: inbound.route.agentId ?? resolveDefaultAgentId(cfg as OpenClawConfig),
       routeSessionKey: inbound.route.sessionKey,
       accountId: inbound.route.accountId,
     },
@@ -810,3 +846,4 @@ async function buildCtxPayload(
     },
   });
 }
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

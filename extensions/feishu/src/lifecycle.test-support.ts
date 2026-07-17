@@ -1,5 +1,6 @@
 // Feishu plugin module implements lifecycle support behavior.
 import { vi, type Mock } from "vitest";
+import { feishuDedupeState } from "./dedup-state.js";
 
 type BoundConversation = {
   bindingId: string;
@@ -89,6 +90,7 @@ export function getFeishuLifecycleTestMocks(): FeishuLifecycleTestMocks {
 }
 
 export function resetFeishuLifecycleTestMocks(): void {
+  feishuDedupeState.reset();
   for (const mock of Object.values(feishuLifecycleTestMocks)) {
     mock.mockReset();
   }
@@ -140,7 +142,6 @@ vi.mock("./client.js", () => {
       start: vi.fn(),
     })),
     createEventDispatcher: createEventDispatcherMock,
-    getFeishuClient: vi.fn(() => null),
     getFeishuUserAgent: vi.fn(() => "openclaw-feishu-test"),
     pluginVersion: "test",
     setFeishuClientRuntimeForTest: vi.fn(),

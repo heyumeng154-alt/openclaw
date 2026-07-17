@@ -511,7 +511,6 @@ export type MemorySearchConfig = {
   /** Index storage configuration. */
   store?: {
     driver?: "sqlite";
-    path?: string;
     fts?: {
       /** FTS5 tokenizer (default: "unicode61"). Use "trigram" for CJK text support. */
       tokenizer?: "unicode61" | "trigram";
@@ -622,7 +621,7 @@ export type ToolsConfig = {
       openaiCodex?: {
         /** Enable native Codex web search for eligible models. */
         enabled?: boolean;
-        /** Use cached or live external web access. Default: "cached". */
+        /** Prefer cached or explicitly request live access. Unrestricted Codex turns resolve cached to live. */
         mode?: "cached" | "live";
         /** Optional allowlist of domains passed to the native Codex tool. */
         allowedDomains?: string[];
@@ -696,7 +695,7 @@ export type ToolsConfig = {
   };
   /**
    * Session tool visibility controls which sessions can be targeted by session tools
-   * (sessions_list, sessions_history, sessions_send).
+   * (sessions_list, sessions_history, sessions_search, sessions_send).
    *
    * Default: "tree" (current session + spawned subagent sessions).
    */
@@ -746,9 +745,9 @@ export type ToolsConfig = {
       deny?: string[];
     };
   };
-  /** Experimental tool flags. Default off unless explicitly enabled, except strict-agentic GPT-5 OpenAI/Codex runs may auto-enable `planTool`. */
+  /** Experimental tool flags. */
   experimental?: {
-    /** Enable the structured `update_plan` tool explicitly outside strict-agentic execution mode. */
+    /** Structured checklist tool; enabled by default. Set false to opt out. */
     planTool?: boolean;
   };
 };

@@ -1,7 +1,9 @@
 // Qqbot plugin module implements inbound context behavior.
 import type { ChannelIngressDecision } from "openclaw/plugin-sdk/channel-ingress-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { EngineAdapters } from "../adapter/index.js";
-import type { GroupActivationMode, SessionStoreReader } from "../group/activation.js";
+import type { QQBotGroupCommandLevel } from "../config/group.js";
+import type { GroupActivationMode } from "../group/activation.js";
 import type { HistoryEntry } from "../group/history.js";
 import type { GroupMessageGateResult } from "../group/message-gating.js";
 import type { QueuedMessage } from "./message-queue.js";
@@ -18,6 +20,7 @@ export interface ReplyToInfo {
 export interface InboundGroupInfo {
   gate: GroupMessageGateResult;
   activation: GroupActivationMode;
+  commandLevel: QQBotGroupCommandLevel;
   historyLimit: number;
   isMerged: boolean;
   mergedMessages?: readonly QueuedMessage[];
@@ -56,14 +59,18 @@ export interface InboundContext {
   blockReasonCode?: string;
   accessDecision?: ChannelIngressDecision["decision"];
   skipped: boolean;
-  skipReason?: "drop_other_mention" | "block_unauthorized_command" | "skip_no_mention";
+  skipReason?:
+    | "drop_other_mention"
+    | "block_unauthorized_command"
+    | "skip_no_mention"
+    | "private_command_only";
   typing: { keepAlive: TypingKeepAlive | null };
   inputNotifyRefIdx?: string;
 }
 
 export interface InboundPipelineDeps {
   account: GatewayAccount;
-  cfg: unknown;
+  cfg: OpenClawConfig;
   log?: EngineLogger;
   runtime: GatewayPluginRuntime;
   startTyping: (event: QueuedMessage) => Promise<{
@@ -71,7 +78,6 @@ export interface InboundPipelineDeps {
     keepAlive: TypingKeepAlive | null;
   }>;
   groupHistories?: Map<string, HistoryEntry[]>;
-  sessionStoreReader?: SessionStoreReader;
   allowTextCommands?: boolean;
   isControlCommand?: (content: string) => boolean;
   resolveGroupIntroHint?: (params: {
